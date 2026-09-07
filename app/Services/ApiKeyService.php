@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Service;
+namespace App\Services;
 
 use App\Models\ApiKey;
 use App\Models\Merchant;
@@ -33,7 +33,7 @@ class ApiKeyService
     /**
      * Rotate an API key by generating a new secret for the exiting record.
      */
-    public function route(ApiKey $apiKey): string
+    public function rotate(ApiKey $apiKey): string
     {
         $prefix = $apiKey->environment === 'production' ? 'sk_live_' : 'sk_test_';
         $plainTextKey = $prefix . Str::random(40);
