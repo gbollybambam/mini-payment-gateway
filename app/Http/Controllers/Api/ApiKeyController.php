@@ -12,7 +12,7 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ApiKeyController extends Controller
 {
-    public function __construct(private ApiKeyResource $apiKeyService)
+    public function __construct(private ApiKeyService $apiKeyService)
     {
     }
 
@@ -39,7 +39,7 @@ class ApiKeyController extends Controller
 
         return response()->json([
             'status' => 'success',
-            'message' => 'API key generated. Store this secret key now, as it will nnot be displayed again.',
+            'message' => 'API key generated. Store this secret key now, as it will not be displayed again.',
             'data' => new ApiKeyResource($apiKey),
         ], Response::HTTP_CREATED);
     }
@@ -52,7 +52,7 @@ class ApiKeyController extends Controller
         $apiKey->plain_text_key = $plainTextKey;
 
         return response()->json([
-            'status' => 'succeess',
+            'status' => 'success',
             'message' => 'API key rotated successfully. Store your new secret key.',
             'data' => new ApiKeyResource($apiKey),
         ], Response::HTTP_OK);
@@ -62,7 +62,7 @@ class ApiKeyController extends Controller
     {
         $apiKey = $request->user()->apiKeys()->findOrFail($id);
 
-        $apiKey->update([ 'revoked' => now() ]);
+        $apiKey->update([ 'revoked_at' => now() ]);
 
         return response()->json([
             'status' => 'success',

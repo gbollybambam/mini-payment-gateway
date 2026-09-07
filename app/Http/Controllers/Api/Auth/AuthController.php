@@ -21,11 +21,20 @@ class AuthController extends Controller
     {
         $merchant = Merchant::create($request->validated());
 
+        // Initialize default merchant settings record
+        $merchant->settings()->create([
+            'brand_name' => $merchant->business_name,
+            'webhook_secret' => 'whsec_' . \Illuminate\Support\Str::random(32),
+        ]);
+
+        // Send verification email
+        $merchant->sendEmailVerificationNotification();
+
         $token = $merchant->createToken('auth-token')->plainTextToken;
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Merchant registered successfully.',
+            'message' => 'Merchant registered successfully. Please verify your email.',
             'data' => [
                 'merchant' => new MerchantResource($merchant),
                 'token' => $token,

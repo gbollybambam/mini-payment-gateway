@@ -2,14 +2,16 @@
 
 namespace App\Models;
 
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-class Merchant extends Authenticable
+class Merchant extends Authenticable implements MustVerifyEmail
 {
     use HasApiTokens, HasFactory, HasUuids, Notifiable;
 
@@ -26,6 +28,7 @@ class Merchant extends Authenticable
         'currency',
         'business_type',
         'password',
+        'email_verified_at',
     ];
 
     /**
@@ -46,6 +49,7 @@ class Merchant extends Authenticable
     protected function casts(): array
     {
         return [
+            'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
     }
@@ -53,5 +57,10 @@ class Merchant extends Authenticable
     public function apiKeys(): HasMany
     {
         return $this->hasMany(ApiKey::class);
+    }
+
+    public function settings(): HasOne
+    {
+        return $this->hasOne(MerchantSetting::class);
     }
 }

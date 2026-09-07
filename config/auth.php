@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Merchant;
 use App\Models\User;
 
 return [
@@ -67,6 +68,13 @@ return [
             'model' => env('AUTH_MODEL', User::class),
         ],
 
+        'merchants' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\Merchant::class,
+        ],
+
+
+
         // 'users' => [
         //     'driver' => 'database',
         //     'table' => 'users',
@@ -99,6 +107,15 @@ return [
             'expire' => 60,
             'throttle' => 60,
         ],
+
+        'passwords' => [
+            'merchants' => [
+                'provider' => 'merchants',
+                'table' => 'password_reset_tokens',
+                'expire' => 60,
+                'throttle' => 60,
+            ]
+        ]
     ],
 
     /*
