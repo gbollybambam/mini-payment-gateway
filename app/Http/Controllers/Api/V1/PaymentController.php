@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Http\Requests\Payment\GetTransactionsRequest;
+use Illuminate\Database\Eloquent\Builder;
 use App\Enums\PaymentStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Payment\InitializePaymentRequest;
@@ -11,11 +13,59 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
+
 class PaymentController extends Controller
 {
     public function __construct(
         private PaymentProviderInterface $paymentProvider
     ) {}
+
+    public function index(GetTransactionsRequest $request): JsonResponse
+    {
+        $merchant = $request->merchant;
+        $validated = $request->validated();
+
+        $query = Transaction::where('merchant_id', $merchant->id);
+
+        if (!empty($validated['search'])) {
+            $searchTerm = $validated['search'];
+            $query->where(function (Builder $q) use ($searchTerm) {
+                $q->where('id', $searchTerm)
+                    ->orWhere('reference', 'ilike', "%{$searchTerm}%")
+                    ->orWhere('customer_email', 'ilike', "%{$searchTerm}%");
+            });
+        }
+
+        if (!empty($validated['start_date'])) {
+            $query->whereDate('created_at', '>=', $validated['start_date']);
+        }
+
+        if (!empty($validated['end_date'])) {
+            $query->whereDate('created_at', '<=', $validated['end_date']);
+        }
+
+        $exactFilters = ['status', 'amount', 'currency', 'provider', 'reference', 'customer_email'];
+        foreach ($exactFilters as $filter) {
+            if (isset($validated[$filter])) {
+                $query->where($filter, $validated[$filter]);
+            }
+        }
+
+        // Always return paginated results for ledger/history endpoints
+        $perPage = $validated['per_page'] ?? 15;
+        $transactions = $query->latest()->paginate($perPage);
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $transactions->items(),
+            'meta' => [
+                'current_page' => $transactions->currentPage(),
+                'last_page' => $transactions->lastPage(),
+                'per_page' => $transactions->perPage(),
+                'total' => $transactions->total(),
+            ]
+        ], Response::HTTP_OK);
+    }
 
     public function initialize(InitializePaymentRequest $request): JsonResponse
     {
