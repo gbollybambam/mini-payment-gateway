@@ -53,8 +53,20 @@ class WebhookController extends Controller
         if ($verifiedData['event'] === 'payment.success') {
             $transaction->update(['status' => PaymentStatus::SUCCESS]);
 
+            \App\Jobs\DispatchMerchantWebhook::dispatch(
+                $transaction->merchant,
+                'payment.success',
+                $transaction->toArray()
+            );
+
         } elseif ($verifiedData['event'] === 'payment.failed') {
             $transaction->update(['status' => PaymentStatus::FAILED]);
+
+            \App\Jobs\DispatchMerchantWebhook::dispatch(
+                $transaction->merchant,
+                'payment.failed',
+                $transaction->toArray()
+            );
         }
 
         return response()->json(['status' => 'success'], Response::HTTP_OK);
