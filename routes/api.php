@@ -59,6 +59,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Merchant Settings
     Route::get('/settings', [MerchantSettingsController::class, 'show']);
     Route::put('/settings', [MerchantSettingsController::class, 'update']);
+    Route::put('/settings/password', [MerchantSettingsController::class, 'updatePassword']);
     Route::post('/settings/webhook-secret/rotate', [MerchantSettingsController::class, 'rotateWebhookSecret']);
 });
 

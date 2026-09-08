@@ -8,6 +8,8 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Http\Request;
+use App\Http\Requests\Settings\UpdatePasswordRequest;
+use Illuminate\Support\Facades\Hash;
 
 class MerchantSettingsController extends Controller
 {
@@ -86,6 +88,21 @@ class MerchantSettingsController extends Controller
             'data' => [
                 'webhook_secret' => $newSecret,
             ],
+        ], Response::HTTP_OK);
+    }
+
+    /**
+     * Update authenticated merchant's password.
+     */
+    public function updatePassword(UpdatePasswordRequest $request): JsonResponse
+    {
+        $request->user()->update([
+            'password' => Hash::make($request->validated('password')),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Password updated successfully.',
         ], Response::HTTP_OK);
     }
 }
