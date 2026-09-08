@@ -73,3 +73,11 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () {
     Route::get('/payments/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify']);
     Route::get('/payments/{id}', [\App\Http\Controllers\Api\V1\PaymentController::class, 'show']);
 });
+
+
+/*
+|--------------------------------------------------------------------------
+| Provider Webhooks (Unauthenticated, Secured by Signature)
+|--------------------------------------------------------------------------
+*/
+Route::post('/webhooks/{provider}', [\App\Http\Controllers\Api\WebhookController::class, 'handle']);
