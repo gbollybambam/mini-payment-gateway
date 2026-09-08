@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Http\Resources\Payment\TransactionResource;
 use App\Http\Requests\Payment\GetTransactionsRequest;
 use Illuminate\Database\Eloquent\Builder;
 use App\Enums\PaymentStatus;
@@ -57,7 +58,7 @@ class PaymentController extends Controller
 
         return response()->json([
             'status' => 'success',
-            'data' => $transactions->items(),
+            'data' => TransactionResource::collection($transactions),
             'meta' => [
                 'current_page' => $transactions->currentPage(),
                 'last_page' => $transactions->lastPage(),
@@ -148,14 +149,38 @@ class PaymentController extends Controller
 
         if (! $verificationResult['success']) {
             $transaction->update(['status' => PaymentStatus::FAILED]);
+
+            \App\Jobs\DispatchMerchantWebhook::dispatch(
+                $transaction->merchant,
+                'payment.failed',
+                $transaction->toArray()
+            );
+
             return $this->paymentResponse($transaction, Response::HTTP_OK);
         }
+
+        $newStatus = PaymentStatus::from($verificationResult['status']);
 
         $transaction->update([
             'status' => PaymentStatus::from($verificationResult['status']),
             'fee' => $verificationResult['fee'] ?? 0,
             'net_amount' => $verificationResult['amount'] - ($verificationResult['fee'] ?? 0),
         ]);
+
+        // Dispatch webhooks based on the newly verified state
+        if ($newStatus === PaymentStatus::SUCCESS) {
+            \App\Jobs\DispatchMerchantWebhook::dispatch(
+                $transaction->merchant,
+                'payment.success',
+                $transaction->toArray()
+            );
+        } elseif ($newStatus === PaymentStatus::FAILED) {
+            \App\Jobs\DispatchMerchantWebhook::dispatch(
+                $transaction->merchant,
+                'payment.failed',
+                $transaction->toArray()
+            );
+        }
 
         return $this->paymentResponse($transaction, Response::HTTP_OK);
     }
@@ -168,7 +193,10 @@ class PaymentController extends Controller
             ->where('id', $id)
             ->firstOrFail();
 
-        return $this->paymentResponse($transaction, Response::HTTP_OK);
+        return response()->json([
+            'status' => 'success',
+            'data' => new TransactionResource($transaction)
+        ], Response::HTTP_OK);
     }
 
     private function paymentResponse(Transaction $transaction, int $statusCode): JsonResponse
