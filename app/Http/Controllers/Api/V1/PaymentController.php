@@ -123,6 +123,12 @@ class PaymentController extends Controller
             'checkout_url' => $providerResponse['checkout_url'],
         ]);
 
+        \App\Jobs\DispatchMerchantWebhook::dispatch(
+            $transaction->merchant,
+            'payment.pending',
+            $transaction->toArray()
+        );
+
         return $this->paymentResponse($transaction, Response::HTTP_CREATED);
     }
 
