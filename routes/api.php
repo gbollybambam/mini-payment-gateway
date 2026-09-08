@@ -70,4 +70,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
 */
 Route::prefix('v1')->middleware('auth.api_key')->group(function () {
     Route::post('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'initialize']);
+    Route::get('/payments/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify']);
+    Route::get('/payments/{id}', [\App\Http\Controllers\Api\V1\PaymentController::class, 'show']);
 });

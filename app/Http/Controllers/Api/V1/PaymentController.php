@@ -8,6 +8,7 @@ use App\Http\Requests\Payment\InitializePaymentRequest;
 use App\Models\Transaction;
 use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 class PaymentController extends Controller
@@ -72,6 +73,52 @@ class PaymentController extends Controller
         ]);
 
         return $this->paymentResponse($transaction, Response::HTTP_CREATED);
+    }
+
+    public function verify(Request $request, string $id): JsonResponse
+    {
+        $merchant = $request->merchant;
+
+        $transaction = Transaction::where('merchant_id', $merchant->id)
+            ->where('id', $id)
+            ->firstOrFail();
+
+        if (in_array($transaction->status, [PaymentStatus::SUCCESS, PaymentStatus::FAILED])) {
+            return $this->paymentResponse($transaction, Response::HTTP_OK);
+        }
+
+        if (! $transaction->provider_reference) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'No provider reference exists for this transaction.'
+            ], Response::HTTP_BAD_REQUEST);
+        }
+
+        $verificationResult = $this->paymentProvider->verifyPayment($transaction->provider_reference);
+
+        if (! $verificationResult['success']) {
+            $transaction->update(['status' => PaymentStatus::FAILED]);
+            return $this->paymentResponse($transaction, Response::HTTP_OK);
+        }
+
+        $transaction->update([
+            'status' => PaymentStatus::from($verificationResult['status']),
+            'fee' => $verificationResult['fee'] ?? 0,
+            'net_amount' => $verificationResult['amount'] - ($verificationResult['fee'] ?? 0),
+        ]);
+
+        return $this->paymentResponse($transaction, Response::HTTP_OK);
+    }
+
+    public function show(Request $request, string $id): JsonResponse
+    {
+        $merchant = $request->merchant;
+
+        $transaction = Transaction::where('merchant_id', $merchant->id)
+            ->where('id', $id)
+            ->firstOrFail();
+
+        return $this->paymentResponse($transaction, Response::HTTP_OK);
     }
 
     private function paymentResponse(Transaction $transaction, int $statusCode): JsonResponse
