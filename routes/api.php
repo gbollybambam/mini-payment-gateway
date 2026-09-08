@@ -61,3 +61,13 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::put('/settings', [MerchantSettingsController::class, 'update']);
     Route::post('/settings/webhook-secret/rotate', [MerchantSettingsController::class, 'rotateWebhookSecret']);
 });
+
+
+/*
+|--------------------------------------------------------------------------
+| External Merchant API (Protected by Secret API Keys)
+|--------------------------------------------------------------------------
+*/
+Route::prefix('v1')->middleware('auth.api_key')->group(function () {
+    Route::post('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'initialize']);
+});

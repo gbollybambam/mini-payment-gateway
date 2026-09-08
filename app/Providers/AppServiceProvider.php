@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
+use App\Services\PaymentProviders\Cray\CrayProvider;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -11,7 +13,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->bind(PaymentProviderInterface::class, CrayProvider::class);
     }
 
     /**
