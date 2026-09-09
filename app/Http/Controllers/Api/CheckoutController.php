@@ -13,6 +13,8 @@ use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Facades\DB;
+
 
 class CheckoutController extends Controller
 {
@@ -42,7 +44,7 @@ class CheckoutController extends Controller
      */
     public function process(ProcessCheckoutRequest $request, string $token): JsonResponse
     {
-        $link = PaymentLink::where('checkout_token', $token)->firstOrFaile();
+        $link = PaymentLink::where('checkout_token', $token)->firstOrFail();
 
         $this->checkLinkValidity($link);
 
@@ -60,6 +62,7 @@ class CheckoutController extends Controller
             'metadata' => [
                 'payment_link_id' => $link->id,
                 'customer_name' => $request->validated('customer_name'),
+                'callback_url' => url("/api/checkout/{$token}/callback"),
             ],
         ]);
 
@@ -83,6 +86,75 @@ class CheckoutController extends Controller
             ]
         ], Response::HTTP_OK);
     }
+
+    /**
+     * Handle the customer returning from the provider's hosted checkout.
+     */
+    public function callback(Request $request, string $token): \Illuminate\Http\RedirectResponse
+    {
+        $link = PaymentLink::with(['merchant.settings'])->where('checkout_token', $token)->firstOrFail();
+
+        // Get the most recent transaction attempt for this link
+        $transaction = Transaction::where('merchant_id', $link->merchant_id)
+            ->whereJsonContains('metadata->payment_link_id', $link->id)
+            ->latest()
+            ->first();
+
+        if (! $transaction) {
+            return redirect()->away($link->merchant->settings?->cancel_url ?? 'https://pay.example.com/payment-failed');
+        }
+
+        // If it's still pending, aggressively verify it now that the customer has returned
+        if ($transaction->status === PaymentStatus::PENDING && $transaction->provider_reference) {
+            $verificationResult = $this->paymentProvider->verifyPayment($transaction->provider_reference);
+
+            $newStatus = $verificationResult['success']
+                ? PaymentStatus::from($verificationResult['status'])
+                : PaymentStatus::FAILED;
+
+            DB::transaction(function () use (&$transaction, $newStatus, $verificationResult, $link) {
+                $lockedTransaction = Transaction::where('id', $transaction->id)->lockForUpdate()->first();
+
+                if ($lockedTransaction->status === PaymentStatus::PENDING) {
+                    $lockedTransaction->update([
+                        'status' => $newStatus,
+                        'fee' => $verificationResult['fee'] ?? 0,
+                        'net_amount' => ($verificationResult['amount'] ?? $lockedTransaction->amount) - ($verificationResult['fee'] ?? 0),
+                    ]);
+
+                    \App\Jobs\DispatchMerchantWebhook::dispatch(
+                        $lockedTransaction->merchant,
+                        $newStatus === PaymentStatus::SUCCESS ? 'payment.success' : 'payment.failed',
+                        $lockedTransaction->toArray()
+                    );
+
+                    if ($newStatus === PaymentStatus::SUCCESS) {
+                        $link->update([
+                            'status' => PaymentLinkStatus::COMPLETED,
+                            'payment_id' => $lockedTransaction->id,
+                        ]);
+                    }
+                }
+
+                // Sync our outer variable so the redirect logic below knows the final status
+                $transaction = $lockedTransaction;
+            });
+        }
+
+        // Determine where to redirect the customer based on the final status
+        if ($transaction->status === PaymentStatus::SUCCESS) {
+            // PRD Section 8 & 16: Use link specific redirect, fallback to merchant global success URL
+            $successUrl = $link->redirect_url ?? $link->merchant->settings?->success_url ?? 'https://pay.example.com/payment-success';
+
+            // Append the transaction reference so the merchant's frontend can display a receipt
+            return redirect()->away("{$successUrl}?reference={$transaction->reference}");
+        }
+
+        // Handle Failure/Cancellation
+        $cancelUrl = $link->merchant->settings?->cancel_url ?? 'https://pay.example.com/payment-failed';
+        return redirect()->away("{$cancelUrl}?reference={$transaction->reference}");
+    }
+
 
     private function checkLinkValidity(PaymentLink $link): void
     {

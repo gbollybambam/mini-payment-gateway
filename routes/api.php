@@ -91,6 +91,7 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () {
 Route::prefix('checkout')->group(function () {
     Route::get('/{token}', [\App\Http\Controllers\Api\CheckoutController::class, 'show']);
     Route::post('/{token}', [\App\Http\Controllers\Api\CheckoutController::class, 'process']);
+    Route::get('/{token}/callback', [\App\Http\Controllers\Api\CheckoutController::class, 'callback']);
 });
 
 /*
