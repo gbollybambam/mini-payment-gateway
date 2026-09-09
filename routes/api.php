@@ -61,6 +61,12 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::put('/settings', [MerchantSettingsController::class, 'update']);
     Route::put('/settings/password', [MerchantSettingsController::class, 'updatePassword']);
     Route::post('/settings/webhook-secret/rotate', [MerchantSettingsController::class, 'rotateWebhookSecret']);
+
+    // Dashboard: Payment Links Management
+    Route::get('/payment-links', [\App\Http\Controllers\Api\PaymentLinkController::class, 'index']);
+    Route::post('/payment-links', [\App\Http\Controllers\Api\PaymentLinkController::class, 'store']);
+    Route::get('/payment-links/{id}', [\App\Http\Controllers\Api\PaymentLinkController::class, 'show']);
+    Route::patch('/payment-links/{id}', [\App\Http\Controllers\Api\PaymentLinkController::class, 'update']);
 });
 
 
