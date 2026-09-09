@@ -58,18 +58,30 @@ class MerchantSettingsController extends Controller
         $merchant = $request->user();
         $validated = $request->validated();
 
+        if (isset($validated['email']) && $validated['email'] !== $merchant->email) {
+            $merchant->email = $validated['email'];
+            $merchant->email_verified_at = null; // Revoke verification status
+            $merchant->sendEmailVerificationNotification(); // Send new link
+        }
+
         // Update core merchant table fields if present
         if (isset($validated['business_name']) || isset($validated['phone'])) {
-            $merchant->update($request->only(['business_name', 'phone']));
+            $merchant->fill($request->only(['business_name', 'phone']));
+        }
+
+        if ($merchant->isDirty()) {
+            $merchant->save();
         }
 
         // Update settings table
         $settings = $merchant->settings()->firstOrCreate(['merchant_id' => $merchant->id]);
-        $settings->update($validated);
+        $settings->update($request->except(['business_name', 'phone', 'email']));
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Settings updated successfully.',
+            'message' => isset($validated['email'])
+                ? 'Settings updated. Please verify your new email address.'
+                : 'Settings updated successfully.',
         ], Response::HTTP_OK);
     }
 

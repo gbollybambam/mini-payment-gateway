@@ -26,6 +26,7 @@ class UpdateMerchantSettingsRequest extends FormRequest
             // Business settings
             'business_name' => ['sometimes', 'string', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'email' => ['sometimes', 'email', 'max:255', 'unique:merchants,email,' . $this->user()->id],
             'logo_url' => ['sometimes', 'nullable', 'url', 'max:255'],
             'website_url' => ['sometimes', 'nullable', 'url', 'max:255'],
 
