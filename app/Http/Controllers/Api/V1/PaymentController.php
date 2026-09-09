@@ -175,6 +175,17 @@ class PaymentController extends Controller
 
         // Dispatch webhooks based on the newly verified state
         if ($newStatus === PaymentStatus::SUCCESS) {
+
+            if (isset($transaction->metadata['payment_link_id'])) {
+                $link = \App\Models\PaymentLink::find($transaction->metadata['payment_link_id']);
+                if ($link) {
+                    $link->update([
+                        'status' => \App\Enums\PaymentLinkStatus::COMPLETED,
+                        'payment_id' => $transaction->id,
+                    ]);
+                }
+            }
+
             \App\Jobs\DispatchMerchantWebhook::dispatch(
                 $transaction->merchant,
                 'payment.success',

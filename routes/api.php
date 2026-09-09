@@ -85,6 +85,16 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () {
 
 /*
 |--------------------------------------------------------------------------
+| Public Hosted Checkout API (No auth required)
+|--------------------------------------------------------------------------
+*/
+Route::prefix('checkout')->group(function () {
+    Route::get('/{token}', [\App\Http\Controllers\Api\CheckoutController::class, 'show']);
+    Route::post('/{token}', [\App\Http\Controllers\Api\CheckoutController::class, 'process']);
+});
+
+/*
+|--------------------------------------------------------------------------
 | Provider Webhooks (Unauthenticated, Secured by Signature)
 |--------------------------------------------------------------------------
 */
