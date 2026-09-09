@@ -21,7 +21,7 @@ return new class extends Migration
 
             $table->integer('response_status')->nullable();
             $table->text('response_body')->nullable();
-            $table->boolean('is_succesful')->default(false);
+            $table->boolean('is_successful')->default(false);
 
             $table->timestamps();
         });

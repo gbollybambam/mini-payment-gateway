@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class MerchantSetting extends Model
 {
+    use HasUuids;
+    
     protected $fillable = [
         'merchant_id',
         'logo_url',

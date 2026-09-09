@@ -52,7 +52,8 @@ class DispatchMerchantWebhook implements ShouldQueue
         $signature = hash_hmac('sha256', $jsonPayload, $settings->webhook_secret);
 
         try {
-            $response = Http::timeout(5)
+            $response = Http::withoutVerifying()
+                ->timeout(5)
                 ->withHeaders([
                     'x-gateway-signature' => $signature,
                     'Content-Type' => 'application/json',

@@ -25,9 +25,11 @@ return new class extends Migration
             $table->decimal('fee', 19, 4)->default(0);
             $table->decimal('net_amount', 19, 4)->default(0);
 
-            $table->string('status');
+            $table->string('status')->default('INITIALIZED');
             $table->string('payment_method')->nullable();
 
+            $table->json('metadata')->nullable();
+            $table->string('checkout_url')->nullable();
             $table->string('idempotency_key')->nullable()->unique();
 
             $table->timestamps();
