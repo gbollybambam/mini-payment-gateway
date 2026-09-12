@@ -20,6 +20,10 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'auth.api_key' => \App\Http\Middleware\VerifyApiKey::class,
         ]);
+
+        $middleware->alias([
+            'merchant.active' => \App\Http\Middleware\EnsureMerchantIsActive::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(

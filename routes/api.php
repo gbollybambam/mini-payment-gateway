@@ -46,7 +46,7 @@ Route::prefix('auth')->group(function () {
 | Merchant Authenticated Surface
 |--------------------------------------------------------------------------
 */
-Route::middleware(['auth:sanctum'])->group(function () {
+Route::middleware(['auth:sanctum', 'merchant.active'])->group(function () {
     // Dashboard Overview
     Route::get('/dashboard/overview', [DashboardController::class, 'overview']);
 
@@ -80,7 +80,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
 | External Merchant API (Protected by Secret API Keys)
 |--------------------------------------------------------------------------
 */
-Route::prefix('v1')->middleware('auth.api_key')->group(function () {
+Route::prefix('v1')->middleware(['auth.api_key', 'merchant.active'])->group(function () {
     Route::get('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'index']);
     Route::post('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'initialize']);
     Route::get('/payments/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify']);
@@ -128,5 +128,16 @@ Route::prefix('admin')->group(function () {
         Route::get('/merchants', [\App\Http\Controllers\Admin\MerchantController::class, 'index']);
         Route::get('/merchants/{id}', [\App\Http\Controllers\Admin\MerchantController::class, 'show']);
         Route::patch('/merchants/{id}/toggle-status', [\App\Http\Controllers\Admin\MerchantController::class, 'toggleStatus']);
+
+        // System Financial Views
+        Route::get('/transactions', [\App\Http\Controllers\Admin\TransactionController::class, 'transactions']);
+        Route::get('/withdrawals', [\App\Http\Controllers\Admin\TransactionController::class, 'withdrawals']);
+
+        // Provider Management
+        Route::get('/providers', [\App\Http\Controllers\Admin\ProviderController::class, 'index']);
+        Route::patch('/providers/{id}', [\App\Http\Controllers\Admin\ProviderController::class, 'update']);
+
+        // Audit Logs
+        Route::get('/audit-logs', [\App\Http\Controllers\Admin\AuditLogController::class, 'index']);
     });
 });

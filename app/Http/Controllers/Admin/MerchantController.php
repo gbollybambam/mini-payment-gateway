@@ -51,12 +51,21 @@ class MerchantController extends Controller
         ], Response::HTTP_OK);
     }
 
-    public function toggleStatus(string $id): JsonResponse
+    public function toggleStatus(Request $request, string $id): JsonResponse
     {
         $merchant = Merchant::findOrFail($id);
 
         $newStatus = $merchant->status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
         $merchant->update(['status' => $newStatus]);
+
+        \App\Models\AuditLog::create([
+            'admin_id' => $request->user()->id,
+            'action' => 'TOGGLE_MERCHANT_STATUS',
+            'target_type' => Merchant::class,
+            'target_id' => $merchant->id,
+            'changes' => ['status' => $newStatus],
+            'ip_address' => $request->ip(),
+        ]);
 
         return response()->json([
             'status' => 'success',
