@@ -110,3 +110,23 @@ Route::prefix('checkout')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::post('/webhooks/{provider}', [\App\Http\Controllers\Api\WebhookController::class, 'handle']);
+
+/*
+|--------------------------------------------------------------------------
+| Admin Backoffice API (Protected by Admin Auth Guard)
+|--------------------------------------------------------------------------
+*/
+Route::prefix('admin')->group(function () {
+    // Public admin auth
+    Route::post('/login', [\App\Http\Controllers\Admin\AuthController::class, 'login']);
+
+    // Protected admin routes
+    Route::middleware('auth:admin')->group(function () {
+        Route::get('/dashboard', [\App\Http\Controllers\Admin\DashboardController::class, 'overview']);
+
+        // Merchant Management
+        Route::get('/merchants', [\App\Http\Controllers\Admin\MerchantController::class, 'index']);
+        Route::get('/merchants/{id}', [\App\Http\Controllers\Admin\MerchantController::class, 'show']);
+        Route::patch('/merchants/{id}/toggle-status', [\App\Http\Controllers\Admin\MerchantController::class, 'toggleStatus']);
+    });
+});
