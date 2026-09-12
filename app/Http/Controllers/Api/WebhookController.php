@@ -63,24 +63,20 @@ class WebhookController extends Controller
                     'net_amount' => $netAmount,
                 ]);
     
-                try {
-                    $wallet = \App\Models\Wallet::firstOrCreate(
-                        ['merchant_id' => $transaction->merchant_id, 'currency' => $transaction->currency],
-                        ['available_balance' => 0, 'pending_balance' => 0]
-                    );
+                $wallet = \App\Models\Wallet::firstOrCreate(
+                    ['merchant_id' => $transaction->merchant_id, 'currency' => $transaction->currency],
+                    ['available_balance' => 0, 'pending_balance' => 0]
+                );
 
-                    if ($wallet) {
-                        $this->ledgerService->credit(
-                            wallet: $wallet,
-                            amount: $transaction->net_amount,
-                            type: \App\Enums\LedgerEntryType::PAYMENT,
-                            reference: 'ldg_' . $transaction->id, // Unique reference to enforce idempotency
-                            transaction: $transaction,
-                            description: "Payment credit for {$transaction->reference}"
-                        );
-                    }
-                } catch (\Exception $e) {
-                    \Illuminate\Support\Facades\Log::error('Ledger credit failed: ' . $e->getMessage());
+                if ($wallet) {
+                    $this->ledgerService->credit(
+                        wallet: $wallet,
+                        amount: $transaction->net_amount,
+                        type: \App\Enums\LedgerEntryType::PAYMENT,
+                        reference: 'ldg_' . $transaction->id, // Unique reference to enforce idempotency
+                        transaction: $transaction,
+                        description: "Payment credit for {$transaction->reference}"
+                    );
                 }
 
                 if (isset($transaction->metadata['payment_link_id'])) {

@@ -170,26 +170,23 @@ class PaymentController extends Controller
                 ]);
 
                 if ($newStatus === PaymentStatus::SUCCESS) {
-                    try {
-                        $wallet = \App\Models\Wallet::firstOrCreate(
-                            ['merchant_id' => $lockedTransaction->merchant_id, 'currency' => $lockedTransaction->currency],
-                            ['available_balance' => 0, 'pending_balance' => 0]
+                    
+                    $wallet = \App\Models\Wallet::firstOrCreate(
+                        ['merchant_id' => $lockedTransaction->merchant_id, 'currency' => $lockedTransaction->currency],
+                        ['available_balance' => 0, 'pending_balance' => 0]
+                    );
+
+                    if ($wallet) {
+                        $this->ledgerService->credit(
+                            wallet: $wallet,
+                            amount: $lockedTransaction->net_amount,
+                            type: \App\Enums\LedgerEntryType::PAYMENT,
+                            reference: 'ldg_' . $lockedTransaction->id,
+                            transaction: $lockedTransaction,
+                            description: "Payment credit for {$lockedTransaction->reference}"
                         );
-
-                        if ($wallet) {
-                            $this->ledgerService->credit(
-                                wallet: $wallet,
-                                amount: $lockedTransaction->net_amount,
-                                type: \App\Enums\LedgerEntryType::PAYMENT,
-                                reference: 'ldg_' . $lockedTransaction->id,
-                                transaction: $lockedTransaction,
-                                description: "Payment credit for {$lockedTransaction->reference}"
-                            );
-                        }
-                    } catch(\Exception $e) {
-                        \Illuminate\Support\Facades\Log::error('Ledger credit failed: ' . $e->getMessage());
                     }
-
+    
                     if (isset($lockedTransaction->metadata['payment_link_id'])) {
                         $link = \App\Models\PaymentLink::find($lockedTransaction->metadata['payment_link_id']);
                         if ($link) {
