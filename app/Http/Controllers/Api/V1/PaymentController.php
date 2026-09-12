@@ -201,7 +201,7 @@ class PaymentController extends Controller
                     }
                 }
 
-            // C. Dispatch the Webhook (Success or Fail)
+                // Dispatch the Webhook (Success or Fail)
                 \App\Jobs\DispatchMerchantWebhook::dispatch(
                     $lockedTransaction->merchant,
                     $newStatus === PaymentStatus::SUCCESS ? 'payment.success' : 'payment.failed',

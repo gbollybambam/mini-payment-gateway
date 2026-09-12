@@ -68,4 +68,9 @@ class Merchant extends Authenticable implements MustVerifyEmail
     {
         return $this->hasMany(PaymentLink::class);
     }
+
+    public function wallets(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Wallet::class);
+    }
 }

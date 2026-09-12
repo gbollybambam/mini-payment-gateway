@@ -13,17 +13,19 @@ class DashboardController extends Controller
     {
         $merchant = $request->user();
 
+        $wallet = $merchant->wallets()->first();
+
         // Schema-ready aggregation structure matching Section 5.2 of the PRD
         // In Phases 2-5, these query models: Wallet, Transaction, Withdrawal
         $overview = [
             'currency' => $merchant->currency,
             'balances' => [
-                'available_balance' => 0,
-                'pending_balance' => 0,
+                'available_balance' => $wallet ? (float) $wallet->available_balance : 0,
+                'pending_balance' => $wallet ? (float) $wallet->pending_balance : 0,
             ],
             'metrics' => [
-                'total_payment_volume' => 0,
-                'transaction_count' => 0,
+                'total_payment_volume' => \App\Models\Transaction::where('merchant_id', $merchant->id)->where('status', 'SUCCESS')->sum('net_amount'),
+                'transaction_count' => \App\Models\Transaction::where('merchant_id', $merchant->id)->count(),
                 'total_withdrawals_volume' => 0,
                 'withdrawal_count' => 0,
             ],
