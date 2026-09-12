@@ -9,6 +9,11 @@ use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\Settings\MerchantSettingsController;
 use Illuminate\Support\Facades\Route;
 
+use App\Http\Controllers\Admin\MerchantController;
+use App\Http\Controllers\Admin\TransactionController;
+use App\Http\Controllers\Admin\ProviderController;
+use App\Http\Controllers\Admin\AuditLogController;
+
 
 /*
 |--------------------------------------------------------------------------

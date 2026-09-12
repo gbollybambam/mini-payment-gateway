@@ -2,6 +2,7 @@
 
 namespace App\Services\PaymentProviders\Contracts;
 
+use App\Models\Merchant;
 use App\Models\Transaction;
 
 interface PaymentProviderInterface
@@ -19,7 +20,7 @@ interface PaymentProviderInterface
     /**
      * Process and validate an incoming webhook payload from the provider.
      */
-    public function processWebhook(array $payload, string $signature): array;
+    public function processWebhook(\Illuminate\Http\Request $request): array;
 
     /**
      * Retrieve the current normalized status of a payment.
@@ -42,4 +43,6 @@ interface PaymentProviderInterface
     public function verifyPayout(string $providerReference): array;
 
     public function healthCheck(): bool;
+
+    public function createMerchantSubaccount(Merchant $merchant): string;
 }

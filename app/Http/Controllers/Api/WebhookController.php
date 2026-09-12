@@ -25,14 +25,12 @@ class WebhookController extends Controller
             return response()->json(['status' => 'error', 'message' => 'Unsupported provider.'], Response::HTTP_BAD_REQUEST);
         }
 
-        $payload = $request->all();
-        $signature = $request->header('x-cray-signature', '');
-
         try {
-            $verifiedData = $this->paymentProvider->processWebhook($payload, $signature);
+            // Hand the raw request to the provider. The provider handles its own signature rules (headers vs body hash).
+            $verifiedData = $this->paymentProvider->processWebhook($request);
         } catch (\Exception $e) {
-            Log::warning("Invalid webhook signature from provider: {$provider}", ['error' => $e->getMessage()]);
-            return response()->json(['status' => 'error', 'message' => 'Invalid signature.'], Response::HTTP_UNAUTHORIZED);
+            Log::warning("Webhook processing error from provider: {$provider}", ['error' => $e->getMessage()]);
+            return response()->json(['status' => 'error', 'message' => 'Processing error.'], Response::HTTP_UNAUTHORIZED);
         }
 
         if (! $verifiedData['is_valid']) {

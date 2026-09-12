@@ -35,4 +35,9 @@ return [
         ],
     ],
 
+    'cray' => [
+        'base_url' => env('CRAY_BASE_URL'),
+        'secret_key' => env('CRAY_SECRET_KEY'),
+        'environment' => env('CRAY_ENVIRONMENT', 'sandbox'),
+    ],
 ];

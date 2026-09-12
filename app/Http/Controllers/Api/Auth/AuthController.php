@@ -26,6 +26,7 @@ class AuthController extends Controller
             'webhook_secret' => 'whsec_' . \Illuminate\Support\Str::random(32),
         ]);
 
+
         \App\Models\Wallet::create([
             'merchant_id' => $merchant->id,
             'currency' => $merchant->currency,
