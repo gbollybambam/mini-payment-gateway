@@ -40,4 +40,6 @@ interface PaymentProviderInterface
      * Verify the status of a payout.
      */
     public function verifyPayout(string $providerReference): array;
+
+    public function healthCheck(): bool;
 }

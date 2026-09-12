@@ -76,4 +76,43 @@ class MerchantController extends Controller
             ]
         ], Response::HTTP_OK);
     }
+
+    public function adjustBalance(Request $request, string $id, \App\Services\Ledger\LedgerService $ledgerService): \Illuminate\Http\JsonResponse
+    {
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'direction' => 'required|in:CREDIT,DEBIT',
+            'description' => 'required|string|max:255',
+            'currency' => 'required|string|size:3'
+        ]);
+
+        $merchant = Merchant::findOrFail($id);
+        $wallet = $merchant->wallets()->where('currency', $validated['currency'])->firstOrFail();
+
+        $entry = \Illuminate\Support\Facades\DB::transaction(function () use ($ledgerService, $wallet, $validated, $request, $merchant) {
+            $method = $validated['direction'] === 'CREDIT' ? 'credit' : 'debit';
+
+            $ledgerEntry = $ledgerService->$method(
+                wallet: $wallet,
+                amount: $validated['amount'],
+                type: \App\Enums\LedgerEntryType::ADJUSTMENT,
+                reference: 'adj_' . \Illuminate\Support\Str::random(16),
+                transaction: null,
+                description: $validated['description']
+            );
+
+            \App\Models\AuditLog::create([
+                'admin_id' => $request->user()->id,
+                'action' => 'MANUAL_LEDGER_ADJUSTMENT',
+                'target_type' => Merchant::class,
+                'target_id' => $merchant->id,
+                'changes' => $validated,
+                'ip_address' => $request->ip(),
+            ]);
+
+            return $ledgerEntry;
+        });
+
+        return response()->json(['status' => 'success', 'data' => $entry]);
+    }
 }

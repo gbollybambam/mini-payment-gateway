@@ -128,6 +128,7 @@ Route::prefix('admin')->group(function () {
         Route::get('/merchants', [\App\Http\Controllers\Admin\MerchantController::class, 'index']);
         Route::get('/merchants/{id}', [\App\Http\Controllers\Admin\MerchantController::class, 'show']);
         Route::patch('/merchants/{id}/toggle-status', [\App\Http\Controllers\Admin\MerchantController::class, 'toggleStatus']);
+        Route::post('/merchants/{id}/adjust-balance', [\App\Http\Controllers\Admin\MerchantController::class, 'adjustBalance']);
 
         // System Financial Views
         Route::get('/transactions', [\App\Http\Controllers\Admin\TransactionController::class, 'transactions']);

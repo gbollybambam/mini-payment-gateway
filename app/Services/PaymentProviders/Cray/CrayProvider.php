@@ -93,4 +93,9 @@ class CrayProvider implements PaymentProviderInterface
             'fee' => 50.00,
         ];
     }
+
+    public function healthCheck(): bool
+    {
+        return true;
+    }
 }

@@ -23,6 +23,7 @@ class Withdrawal extends Model
         'status',
         'bank_account',
         'metadata',
+        'failure_reason',
     ];
 
     protected function casts(): array

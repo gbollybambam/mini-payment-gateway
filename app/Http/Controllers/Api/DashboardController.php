@@ -28,7 +28,10 @@ class DashboardController extends Controller
                 'total_withdrawals_volume' => \App\Models\Withdrawal::where('merchant_id', $merchant->id)->where('status', 'SUCCESS')->sum('amount'),
                 'withdrawal_count' => \App\Models\Withdrawal::where('merchant_id', $merchant->id)->count(),
             ],
-            'recent_activity' => [],
+            'recent_activity' => \App\Models\Transaction::where('merchant_id', $merchant->id)
+                ->latest()
+                ->take(5)
+                ->get(['id', 'reference', 'amount', 'currency', 'status', 'created_at']),
         ];
 
         return response()->json([

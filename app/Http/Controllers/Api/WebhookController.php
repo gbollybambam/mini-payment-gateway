@@ -9,7 +9,6 @@ use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Psy\Util\Json;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\DB;
 
@@ -27,7 +26,6 @@ class WebhookController extends Controller
         }
 
         $payload = $request->all();
-
         $signature = $request->header('x-cray-signature', '');
 
         try {
@@ -41,125 +39,137 @@ class WebhookController extends Controller
             return response()->json(['status' => 'error', 'message' => 'Webhook validation failed.'], Response::HTTP_UNAUTHORIZED);
         }
 
-        return DB::transaction(function () use ($verifiedData) {
-            $transaction = Transaction::where('provider_reference', $verifiedData['provider_reference'])->lockForUpdate()->first();
-    
-            if (! $transaction) {
-                Log::info("Webhook received for unknown transaction.", ['reference' => $verifiedData['provider_reference']]);
-                return response()->json(['status' => 'success'], Response::HTTP_OK);
-            }
-    
-            if (in_array($transaction->status, [PaymentStatus::SUCCESS, PaymentStatus::FAILED])) {
-                return response()->json(['status' => 'success', 'message' => 'Transaction already processed.'], Response::HTTP_OK);
-            }
-
-            if ($verifiedData['event'] === 'payment.success') {
-                $fee = $verifiedData['fee'] ?? 0;
-                $netAmount = ($verifiedData['amount'] ?? $transaction->amount) - $fee;
-
-                $transaction->update([
-                    'status' => PaymentStatus::SUCCESS,
-                    'fee' => $fee,
-                    'net_amount' => $netAmount,
-                ]);
-    
-                $wallet = \App\Models\Wallet::firstOrCreate(
-                    ['merchant_id' => $transaction->merchant_id, 'currency' => $transaction->currency],
-                    ['available_balance' => 0, 'pending_balance' => 0]
-                );
-
-                if ($wallet) {
-                    $this->ledgerService->credit(
-                        wallet: $wallet,
-                        amount: $transaction->net_amount,
-                        type: \App\Enums\LedgerEntryType::PAYMENT,
-                        reference: 'ldg_' . $transaction->id, // Unique reference to enforce idempotency
-                        transaction: $transaction,
-                        description: "Payment credit for {$transaction->reference}"
-                    );
-                }
-
-                if (isset($transaction->metadata['payment_link_id'])) {
-                    $link = \App\Models\PaymentLink::find($transaction->metadata['payment_link_id']);
-                    if ($link) {
-                        $link->update([
-                            'status' => \App\Enums\PaymentLinkStatus::COMPLETED,
-                            'payment_id' => $transaction->id,
-                        ]);
-                    }
-                }
-    
-                \App\Jobs\DispatchMerchantWebhook::dispatch(
-                    $transaction->merchant,
-                    'payment.success',
-                    $transaction->toArray()
-                );
-    
-            } elseif ($verifiedData['event'] === 'payment.failed') {
-                $transaction->update(['status' => PaymentStatus::FAILED]);
-    
-                \App\Jobs\DispatchMerchantWebhook::dispatch(
-                    $transaction->merchant,
-                    'payment.failed',
-                    $transaction->toArray()
-                );
-            }
-            
-            return response()->json(['status' => 'success'], Response::HTTP_OK);
-        });
-
         // ---------------------------------------------------------
-        // WITHDRAWAL WEBHOOKS (Phase 5)
+        // 1. PAYMENT WEBHOOKS
         // ---------------------------------------------------------
-        if (in_array($verifiedData['event'], ['withdrawal.success', 'withdrawal.failed'])) {
-            $withdrawal = \App\Models\Withdrawal::where('provider_reference', $verifiedData['provider_reference'])
-                ->lockForUpdate()
-                ->first();
-
-            if (! $withdrawal) {
-                \Illuminate\Support\Facades\Log::info("Webhook received for unknown withdrawal.", ['reference' => $verifiedData['provider_reference']]);
-                return response()->json(['status' => 'success'], Response::HTTP_OK);
-            }
-
-            if (in_array($withdrawal->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED])) {
-                return response()->json(['status' => 'success', 'message' => 'Withdrawal already processed.'], Response::HTTP_OK);
-            }
-         
-            if ($verifiedData['event'] === 'withdrawal.success') {
-                // Money successfully landed in the bank. Ledger was already debited on initialization.
-                $withdrawal->update(['status' => \App\Enums\WithdrawalStatus::SUCCESS]);
-
-                \App\Jobs\DispatchMerchantWebhook::dispatch(
-                    $withdrawal->merchant,
-                    'withdrawal.success',
-                    $withdrawal->toArray()
-                );
-
-            } elseif ($verifiedData['event'] === 'withdrawal.failed') {
-                $withdrawal->update(['status' => \App\Enums\WithdrawalStatus::FAILED]);
-
-                // COMPENSATING TRANSACTION: Bank transfer failed. Refund the merchant's wallet.
-                $wallet = \App\Models\Wallet::where('merchant_id', $withdrawal->merchant_id)
-                    ->where('currency', $withdrawal->currency)
+        if (str_starts_with($verifiedData['event'], 'payment.')) {
+            return DB::transaction(function () use ($verifiedData) {
+                $transaction = Transaction::where('provider_reference', $verifiedData['provider_reference'])
+                    ->lockForUpdate()
                     ->first();
 
-                if ($wallet) {
-                    $this->ledgerService->credit(
-                        wallet: $wallet,
-                        amount: $withdrawal->amount,
-                        type: \App\Enums\LedgerEntryType::REVERSAL,
-                        reference: 'ldg_rev_' . $withdrawal->id,
-                        transaction: null,
-                        description: "Reversal for failed bank withdrawal: {$withdrawal->reference}"
+                if (! $transaction) {
+                    Log::info("Webhook received for unknown transaction.", ['reference' => $verifiedData['provider_reference']]);
+                    return response()->json(['status' => 'success'], Response::HTTP_OK);
+                }
+
+                if (in_array($transaction->status, [PaymentStatus::SUCCESS, PaymentStatus::FAILED])) {
+                    return response()->json(['status' => 'success', 'message' => 'Transaction already processed.'], Response::HTTP_OK);
+                }
+
+                if ($verifiedData['event'] === 'payment.success') {
+                    $fee = $verifiedData['fee'] ?? 0;
+                    $netAmount = ($verifiedData['amount'] ?? $transaction->amount) - $fee;
+
+                    $transaction->update([
+                        'status' => PaymentStatus::SUCCESS,
+                        'fee' => $fee,
+                        'net_amount' => $netAmount,
+                    ]);
+
+                    $wallet = \App\Models\Wallet::firstOrCreate(
+                        ['merchant_id' => $transaction->merchant_id, 'currency' => $transaction->currency],
+                        ['available_balance' => 0, 'pending_balance' => 0]
+                    );
+
+                    if ($wallet) {
+                        $this->ledgerService->credit(
+                            wallet: $wallet,
+                            amount: $transaction->net_amount,
+                            type: \App\Enums\LedgerEntryType::PAYMENT,
+                            reference: 'ldg_' . $transaction->id,
+                            transaction: $transaction,
+                            description: "Payment credit for {$transaction->reference}"
+                        );
+                    }
+
+                    if (isset($transaction->metadata['payment_link_id'])) {
+                        $link = \App\Models\PaymentLink::find($transaction->metadata['payment_link_id']);
+                        if ($link) {
+                            $link->update([
+                                'status' => \App\Enums\PaymentLinkStatus::COMPLETED,
+                                'payment_id' => $transaction->id,
+                            ]);
+                        }
+                    }
+
+                    \App\Jobs\DispatchMerchantWebhook::dispatch(
+                        $transaction->merchant,
+                        'payment.success',
+                        $transaction->toArray()
+                    );
+                } elseif ($verifiedData['event'] === 'payment.failed') {
+                    $transaction->update(['status' => PaymentStatus::FAILED]);
+
+                    \App\Jobs\DispatchMerchantWebhook::dispatch(
+                        $transaction->merchant,
+                        'payment.failed',
+                        $transaction->toArray()
                     );
                 }
 
-                \App\Jobs\DispatchMerchantWebhook::dispatch(
-                    $withdrawal->merchant,
-                    'withdrawal.failed',
-                    $withdrawal->toArray()
-                );
-            }
+                return response()->json(['status' => 'success'], Response::HTTP_OK);
+            });
+        }
+
+        // ---------------------------------------------------------
+        // 2. WITHDRAWAL WEBHOOKS (Phase 5)
+        // ---------------------------------------------------------
+        if (str_starts_with($verifiedData['event'], 'withdrawal.')) {
+            return DB::transaction(function () use ($verifiedData) {
+                $withdrawal = \App\Models\Withdrawal::where('provider_reference', $verifiedData['provider_reference'])
+                    ->lockForUpdate()
+                    ->first();
+
+                if (! $withdrawal) {
+                    Log::info("Webhook received for unknown withdrawal.", ['reference' => $verifiedData['provider_reference']]);
+                    return response()->json(['status' => 'success'], Response::HTTP_OK);
+                }
+
+                if (in_array($withdrawal->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED])) {
+                    return response()->json(['status' => 'success', 'message' => 'Withdrawal already processed.'], Response::HTTP_OK);
+                }
+
+                if ($verifiedData['event'] === 'withdrawal.success') {
+                    $withdrawal->update(['status' => \App\Enums\WithdrawalStatus::SUCCESS]);
+
+                    \App\Jobs\DispatchMerchantWebhook::dispatch(
+                        $withdrawal->merchant,
+                        'withdrawal.success',
+                        $withdrawal->toArray()
+                    );
+                } elseif ($verifiedData['event'] === 'withdrawal.failed') {
+
+                    // GAP 4 FIX: INJECT THE FAILURE REASON HERE
+                    $withdrawal->update([
+                        'status' => \App\Enums\WithdrawalStatus::FAILED,
+                        'failure_reason' => $verifiedData['reason'] ?? 'Bank network rejected transfer',
+                    ]);
+
+                    $wallet = \App\Models\Wallet::where('merchant_id', $withdrawal->merchant_id)
+                        ->where('currency', $withdrawal->currency)
+                        ->first();
+
+                    if ($wallet) {
+                        $this->ledgerService->credit(
+                            wallet: $wallet,
+                            amount: $withdrawal->amount,
+                            type: \App\Enums\LedgerEntryType::REVERSAL,
+                            reference: 'ldg_rev_' . $withdrawal->id,
+                            transaction: null,
+                            description: "Reversal for failed bank withdrawal: {$withdrawal->reference}"
+                        );
+                    }
+
+                    \App\Jobs\DispatchMerchantWebhook::dispatch(
+                        $withdrawal->merchant,
+                        'withdrawal.failed',
+                        $withdrawal->toArray()
+                    );
+                }
+
+                return response()->json(['status' => 'success'], Response::HTTP_OK);
+            });
         }
 
         return response()->json(['status' => 'success'], Response::HTTP_OK);

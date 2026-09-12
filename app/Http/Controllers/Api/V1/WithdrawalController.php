@@ -119,8 +119,11 @@ class WithdrawalController extends Controller
             ]);
     
         } catch (\Exception $e) {
-            DB::transaction(function () use ($withdrawal, $wallet) {
-                $withdrawal->update(['status' => WithdrawalStatus::FAILED]);
+            DB::transaction(function () use ($withdrawal, $wallet, $e) {
+                $withdrawal->update([
+                    'status' => WithdrawalStatus::FAILED,
+                    'failure_reason' => substr($e->getMessage(), 0, 255)
+                ]);
 
                 $this->ledgerService->credit(
                     wallet: $wallet,
