@@ -32,7 +32,12 @@ interface PaymentProviderInterface
     public function refundPayment(Transaction $transaction, float $amount): array;
 
     /**
-     * Create a payout/withdrawal to a bank account.
+     * Initialize a payout/withdrawal to a merchant's bank account.
      */
-    public function createPayout(array $bankDetails, float $amount, string $currency): array;
+    public function initializePayout(\App\Models\Withdrawal $withdrawal): array;
+
+    /**
+     * Verify the status of a payout.
+     */
+    public function verifyPayout(string $providerReference): array;
 }

@@ -4,6 +4,7 @@ namespace App\Services\PaymentProviders\Cray;
 
 use App\Enums\PaymentStatus;
 use App\Models\Transaction;
+use App\Models\Withdrawal;
 use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
 use Illuminate\Support\Facades\Http;
 use Override;
@@ -73,8 +74,23 @@ class CrayProvider implements PaymentProviderInterface
         return ['success' => true, 'refund_reference' => 'ref_123'];
     }
 
-    public function createPayout(array $bankDetails, float $amount, string $currency): array
+    public function initializePayout(Withdrawal $withdrawal): array
     {
-        return ['success' => true, 'payout_reference' => 'pout_123'];
+        return [
+            'success' => true,
+            'provider_reference' => 'cray_pout_' . \Illuminate\Support\Str::random(12),
+            'status' => 'PROCESSING',
+            'fee' => 50.00,
+        ];
+    }
+
+    public function verifyPayout(string $providerReference): array
+    {
+        return [
+            'success' => true,
+            'status' => 'SUCCESS',
+            'amount' => null,
+            'fee' => 50.00,
+        ];
     }
 }

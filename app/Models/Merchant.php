@@ -73,4 +73,9 @@ class Merchant extends Authenticable implements MustVerifyEmail
     {
         return $this->hasMany(Wallet::class);
     }
+
+    public function withdrawals(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(Withdrawal::class);
+    }
 }
