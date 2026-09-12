@@ -43,6 +43,16 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+        // Your existing merchant API guard
+        'merchant' => [
+            'driver' => 'sanctum',
+            'provider' => 'merchants',
+        ],
+        // ADD THIS: The Admin API guard
+        'admin' => [
+            'driver' => 'sanctum',
+            'provider' => 'admins',
+        ],
     ],
 
     /*
@@ -65,20 +75,18 @@ return [
     'providers' => [
         'users' => [
             'driver' => 'eloquent',
-            'model' => env('AUTH_MODEL', User::class),
+            'model' => env('AUTH_MODEL', App\Models\User::class),
         ],
-
+        // Your existing merchant provider
         'merchants' => [
             'driver' => 'eloquent',
             'model' => App\Models\Merchant::class,
         ],
-
-
-
-        // 'users' => [
-        //     'driver' => 'database',
-        //     'table' => 'users',
-        // ],
+        // ADD THIS: The Admin provider
+        'admins' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\Admin::class,
+        ],
     ],
 
     /*
