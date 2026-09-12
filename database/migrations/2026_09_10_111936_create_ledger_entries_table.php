@@ -27,7 +27,7 @@ return new class extends Migration
             $table->decimal('balance_after', 9, 4);
 
             $table->string('description')->nullable();
-            $table->string('references')->unique();
+            $table->string('reference')->unique();
 
             $table->timestamp('created_at')->useCurrent();
             $table->timestamp('updated_at')->useCurrent()->useCurrentOnUpdate();

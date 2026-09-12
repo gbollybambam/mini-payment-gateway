@@ -24,7 +24,24 @@ class InitializePaymentRequest extends FormRequest
     {
         return [
             'amount' => ['required', 'numeric', 'min:1'],
-            'currency' => ['required', 'string', 'size:3', 'uppercase'],
+            'currency' => [
+                'required',
+                'string',
+                'size:3',
+                'uppercase',
+                function (string $attribute, mixed $value, \Closure $fail) {
+                    // Use $this->merchant->id if this is an API key protected route
+                    $merchantId = $this->merchant ? $this->merchant->id : $this->user()->id;
+
+                    $walletExists = \App\Models\Wallet::where('merchant_id', $merchantId)
+                        ->where('currency', $value)
+                        ->exists();
+
+                    if (! $walletExists) {
+                        $fail("Your account is not configured to accept {$value}.");
+                    }
+                },
+            ],
             'customer_email' => ['required', 'email'],
             'reference' => ['required', 'string', 'max:100'],
             'callback_url' => ['nullable', 'url'],

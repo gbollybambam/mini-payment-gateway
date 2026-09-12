@@ -25,7 +25,22 @@ class StorePaymentLinkRequest extends FormRequest
     {
         return [
             'amount' => ['required', 'numeric', 'min:1'],
-            'currency' => ['required', 'string', 'size:3', 'uppercase'],
+            'currency' => [
+                'required',
+                'string',
+                'size:3',
+                'uppercase',
+                // Custom rule to ensure the wallet exists
+                function (string $attribute, mixed $value, \Closure $fail) {
+                    $walletExists = \App\Models\Wallet::where('merchant_id', $this->user()->id)
+                        ->where('currency', $value)
+                        ->exists();
+
+                    if (! $walletExists) {
+                        $fail("You do not have an active wallet setup for {$value}. Please create one first.");
+                    }
+                },
+            ],
             'description' => ['required', 'string', 'max:255'],
             'reference' => [
                 'required',

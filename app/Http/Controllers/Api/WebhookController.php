@@ -16,7 +16,8 @@ use Illuminate\Support\Facades\DB;
 class WebhookController extends Controller
 {
     public function __construct(
-        private PaymentProviderInterface $paymentProvider
+        private PaymentProviderInterface $paymentProvider,
+        private \App\Services\Ledger\LedgerService $ledgerService
     ) {}
 
     public function handle(Request $request, string $provider): JsonResponse
@@ -53,8 +54,35 @@ class WebhookController extends Controller
             }
 
             if ($verifiedData['event'] === 'payment.success') {
-                $transaction->update(['status' => PaymentStatus::SUCCESS]);
+                $fee = $verifiedData['fee'] ?? 0;
+                $netAmount = ($verifiedData['amount'] ?? $transaction->amount) - $fee;
+
+                $transaction->update([
+                    'status' => PaymentStatus::SUCCESS,
+                    'fee' => $fee,
+                    'net_amount' => $netAmount,
+                ]);
     
+                try {
+                    $wallet = \App\Models\Wallet::firstOrCreate(
+                        ['merchant_id' => $transaction->merchant_id, 'currency' => $transaction->currency],
+                        ['available_balance' => 0, 'pending_balance' => 0]
+                    );
+
+                    if ($wallet) {
+                        $this->ledgerService->credit(
+                            wallet: $wallet,
+                            amount: $transaction->net_amount,
+                            type: \App\Enums\LedgerEntryType::PAYMENT,
+                            reference: 'ldg_' . $transaction->id, // Unique reference to enforce idempotency
+                            transaction: $transaction,
+                            description: "Payment credit for {$transaction->reference}"
+                        );
+                    }
+                } catch (\Exception $e) {
+                    \Illuminate\Support\Facades\Log::error('Ledger credit failed: ' . $e->getMessage());
+                }
+
                 if (isset($transaction->metadata['payment_link_id'])) {
                     $link = \App\Models\PaymentLink::find($transaction->metadata['payment_link_id']);
                     if ($link) {

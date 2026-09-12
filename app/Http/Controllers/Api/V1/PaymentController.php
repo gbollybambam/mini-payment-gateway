@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use Illuminate\Support\Facades\DB;
 use App\Http\Resources\Payment\TransactionResource;
 use App\Http\Requests\Payment\GetTransactionsRequest;
 use Illuminate\Database\Eloquent\Builder;
@@ -14,11 +15,11 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
-
 class PaymentController extends Controller
 {
     public function __construct(
-        private PaymentProviderInterface $paymentProvider
+        private PaymentProviderInterface $paymentProvider,
+        private \App\Services\Ledger\LedgerService $ledgerService
     ) {}
 
     public function index(GetTransactionsRequest $request): JsonResponse
@@ -153,52 +154,64 @@ class PaymentController extends Controller
 
         $verificationResult = $this->paymentProvider->verifyPayment($transaction->provider_reference);
 
-        if (! $verificationResult['success']) {
-            $transaction->update(['status' => PaymentStatus::FAILED]);
+        $newStatus = $verificationResult['success']
+            ? PaymentStatus::from($verificationResult['status'])
+            : PaymentStatus::FAILED;
 
-            \App\Jobs\DispatchMerchantWebhook::dispatch(
-                $transaction->merchant,
-                'payment.failed',
-                $transaction->toArray()
-            );
+        DB::transaction(function () use (&$transaction, $newStatus, $verificationResult) {
+            $lockedTransaction = Transaction::where('id', $transaction->id)->lockForUpdate()->first();
 
-            return $this->paymentResponse($transaction, Response::HTTP_OK);
-        }
+            if ($lockedTransaction->status === PaymentStatus::PENDING) {
 
-        $newStatus = PaymentStatus::from($verificationResult['status']);
+                $lockedTransaction->update([
+                    'status' => $newStatus,
+                    'fee' => $verificationResult['fee'] ?? 0,
+                    'net_amount' => ($verificationResult['amount'] ?? $lockedTransaction->amount) - ($verificationResult['fee'] ?? 0),
+                ]);
 
-        $transaction->update([
-            'status' => PaymentStatus::from($verificationResult['status']),
-            'fee' => $verificationResult['fee'] ?? 0,
-            'net_amount' => $verificationResult['amount'] - ($verificationResult['fee'] ?? 0),
-        ]);
+                if ($newStatus === PaymentStatus::SUCCESS) {
+                    try {
+                        $wallet = \App\Models\Wallet::firstOrCreate(
+                            ['merchant_id' => $lockedTransaction->merchant_id, 'currency' => $lockedTransaction->currency],
+                            ['available_balance' => 0, 'pending_balance' => 0]
+                        );
 
-        // Dispatch webhooks based on the newly verified state
-        if ($newStatus === PaymentStatus::SUCCESS) {
+                        if ($wallet) {
+                            $this->ledgerService->credit(
+                                wallet: $wallet,
+                                amount: $lockedTransaction->net_amount,
+                                type: \App\Enums\LedgerEntryType::PAYMENT,
+                                reference: 'ldg_' . $lockedTransaction->id,
+                                transaction: $lockedTransaction,
+                                description: "Payment credit for {$lockedTransaction->reference}"
+                            );
+                        }
+                    } catch(\Exception $e) {
+                        \Illuminate\Support\Facades\Log::error('Ledger credit failed: ' . $e->getMessage());
+                    }
 
-            if (isset($transaction->metadata['payment_link_id'])) {
-                $link = \App\Models\PaymentLink::find($transaction->metadata['payment_link_id']);
-                if ($link) {
-                    $link->update([
-                        'status' => \App\Enums\PaymentLinkStatus::COMPLETED,
-                        'payment_id' => $transaction->id,
-                    ]);
+                    if (isset($lockedTransaction->metadata['payment_link_id'])) {
+                        $link = \App\Models\PaymentLink::find($lockedTransaction->metadata['payment_link_id']);
+                        if ($link) {
+                            $link->update([
+                                'status' => \App\Enums\PaymentLinkStatus::COMPLETED,
+                                'payment_id' => $lockedTransaction->id,
+                            ]);
+                        }
+                    }
                 }
+
+            // C. Dispatch the Webhook (Success or Fail)
+                \App\Jobs\DispatchMerchantWebhook::dispatch(
+                    $lockedTransaction->merchant,
+                    $newStatus === PaymentStatus::SUCCESS ? 'payment.success' : 'payment.failed',
+                    $lockedTransaction->toArray()
+                );
             }
 
-            \App\Jobs\DispatchMerchantWebhook::dispatch(
-                $transaction->merchant,
-                'payment.success',
-                $transaction->toArray()
-            );
-        } elseif ($newStatus === PaymentStatus::FAILED) {
-            \App\Jobs\DispatchMerchantWebhook::dispatch(
-                $transaction->merchant,
-                'payment.failed',
-                $transaction->toArray()
-            );
-        }
-
+            $transaction = $lockedTransaction;
+        });
+    
         return $this->paymentResponse($transaction, Response::HTTP_OK);
     }
 

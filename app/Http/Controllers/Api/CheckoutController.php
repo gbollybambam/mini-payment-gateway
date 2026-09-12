@@ -19,7 +19,8 @@ use Illuminate\Support\Facades\DB;
 class CheckoutController extends Controller
 {
     public function __construct(
-        private PaymentProviderInterface $paymentProvider
+        private PaymentProviderInterface $paymentProvider,
+        private \App\Services\Ledger\LedgerService $ledgerService
     ) {}
 
     /**
@@ -90,7 +91,7 @@ class CheckoutController extends Controller
     /**
      * Handle the customer returning from the provider's hosted checkout.
      */
-    public function callback(Request $request, string $token): \Illuminate\Http\RedirectResponse
+    public function callback(string $token): \Illuminate\Http\RedirectResponse
     {
         $link = PaymentLink::with(['merchant.settings'])->where('checkout_token', $token)->firstOrFail();
 
@@ -129,6 +130,24 @@ class CheckoutController extends Controller
                     );
 
                     if ($newStatus === PaymentStatus::SUCCESS) {
+                        try {
+                            $wallet = \App\Models\Wallet::firstOrCreate(
+                                ['merchant_id' => $lockedTransaction->merchant_id, 'currency' => $lockedTransaction->currency],
+                                ['available_balance' => 0, 'pending_balance' => 0]
+                            );
+
+                            $this->ledgerService->credit(
+                                wallet: $wallet,
+                                amount: $lockedTransaction->net_amount,
+                                type: \App\Enums\LedgerEntryType::PAYMENT,
+                                reference: 'ldg_' . $lockedTransaction->id,
+                                transaction: $lockedTransaction,
+                                description: "Payment credit for {$lockedTransaction->reference}"
+                            );
+                        } catch (\Exception $e) {
+                            \Illuminate\Support\Facades\Log::error('Ledger credit failed: ' . $e->getMessage());
+                        }
+
                         $link->update([
                             'status' => PaymentLinkStatus::COMPLETED,
                             'payment_id' => $lockedTransaction->id,

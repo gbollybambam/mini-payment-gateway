@@ -67,6 +67,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/payment-links', [\App\Http\Controllers\Api\PaymentLinkController::class, 'store']);
     Route::get('/payment-links/{id}', [\App\Http\Controllers\Api\PaymentLinkController::class, 'show']);
     Route::patch('/payment-links/{id}', [\App\Http\Controllers\Api\PaymentLinkController::class, 'update']);
+
+    // Wallet & Ledger
+    Route::get('/wallet', [\App\Http\Controllers\Api\WalletController::class, 'index']);
+    Route::get('/wallet/balance', [\App\Http\Controllers\Api\WalletController::class, 'index']); // Resolves to the same data
+    Route::get('/wallet/ledger', [\App\Http\Controllers\Api\WalletController::class, 'ledger']);
 });
 
 
