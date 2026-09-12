@@ -85,6 +85,11 @@ Route::prefix('v1')->middleware('auth.api_key')->group(function () {
     Route::post('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'initialize']);
     Route::get('/payments/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify']);
     Route::get('/payments/{id}', [\App\Http\Controllers\Api\V1\PaymentController::class, 'show']);
+
+    // Withdrawals (Protected by API Key)
+    Route::get('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'index']);
+    Route::post('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'initialize']);
+    Route::get('/withdrawals/{id}', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'show']);
 });
 
 
