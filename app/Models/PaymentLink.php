@@ -27,7 +27,8 @@ class PaymentLink extends Model
         'metadata',
     ];
 
-    protected function cast(): array
+    // THE FIX: Changed from cast() to casts()
+    protected function casts(): array
     {
         return [
             'amount' => 'decimal:4',

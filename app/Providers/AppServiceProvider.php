@@ -2,23 +2,23 @@
 
 namespace App\Providers;
 
-use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
-use App\Services\PaymentProviders\Cray\CrayProvider;
 use Illuminate\Support\ServiceProvider;
+use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
+use App\Services\PaymentProviders\Paystack\PaystackProvider;
+use App\Services\PaymentProviders\Cray\CrayProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
-    /**
-     * Register any application services.
-     */
     public function register(): void
     {
-        $this->app->bind(PaymentProviderInterface::class, CrayProvider::class);
+        $this->app->bind(PaymentProviderInterface::class, function ($app) {
+            return match (config('services.active_provider', 'paystack')) {
+                'paystack' => new PaystackProvider(),
+                default => new CrayProvider(),
+            };
+        });
     }
 
-    /**
-     * Bootstrap any application services.
-     */
     public function boot(): void
     {
         //

@@ -7,6 +7,7 @@ use App\Models\AuditLog;
 use App\Models\Provider;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Symfony\Component\HttpFoundation\Response;
 
 class ProviderController extends Controller
@@ -24,7 +25,15 @@ class ProviderController extends Controller
         ]);
 
         $provider = Provider::findOrFail($id);
-        $provider->update($validated);
+
+        DB::transaction(function () use ($provider, $validated) {
+            // Enforce Single Active Provider Rule
+            if (isset($validated['is_active']) && $validated['is_active'] === true) {
+                Provider::where('id', '!=', $provider->id)->update(['is_active' => false]);
+            }
+
+            $provider->update($validated);
+        });
 
         // PRD Section 17: Log this action
         AuditLog::create([
@@ -36,6 +45,6 @@ class ProviderController extends Controller
             'ip_address' => $request->ip(),
         ]);
 
-        return response()->json(['status' => 'success', 'data' => $provider], Response::HTTP_OK);
+        return response()->json(['status' => 'success', 'data' => $provider->fresh()], Response::HTTP_OK);
     }
 }

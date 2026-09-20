@@ -29,6 +29,7 @@ class Merchant extends Authenticable implements MustVerifyEmail
         'business_type',
         'password',
         'email_verified_at',
+        'status',
     ];
 
     /**
@@ -74,8 +75,46 @@ class Merchant extends Authenticable implements MustVerifyEmail
         return $this->hasMany(Wallet::class);
     }
 
-    public function withdrawals(): \Illuminate\Database\Eloquent\Relations\HasMany
+    public function transactions()
     {
-        return $this->hasMany(Withdrawal::class);
+        return $this->hasMany(\App\Models\Transaction::class);
+    }
+
+    public function withdrawals()
+    {
+        return $this->hasMany(\App\Models\Withdrawal::class);
+    }
+
+    public function webhookDeliveries(): HasMany
+    {
+        return $this->hasMany(WebhookDelivery::class);
+    }
+
+    /**
+     * Send the email verification notification asynchronously.
+     */
+    public function sendEmailVerificationNotification()
+    {
+        // We wrap the email in "dispatch", which throws it into the background queue!
+        dispatch(function () {
+            $this->notify(new \Illuminate\Auth\Notifications\VerifyEmail);
+        });
+    }
+
+    /**
+     * Send the password reset notification asynchronously pointing to the Next.js SPA.
+     */
+    public function sendPasswordResetNotification($token)
+    {
+        dispatch(function () use ($token) {
+            $frontendUrl = env('FRONTEND_URL', 'http://localhost:3000');
+            $url = $frontendUrl . '/reset-password?token=' . $token . '&email=' . urlencode($this->email);
+
+            \Illuminate\Auth\Notifications\ResetPassword::createUrlUsing(function () use ($url) {
+                return $url;
+            });
+
+            $this->notify(new \Illuminate\Auth\Notifications\ResetPassword($token));
+        });
     }
 }

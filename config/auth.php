@@ -41,7 +41,7 @@ return [
     'guards' => [
         'web' => [
             'driver' => 'session',
-            'provider' => 'users',
+            'provider' => 'merchants',
         ],
         // Your existing merchant API guard
         'merchant' => [
@@ -50,7 +50,7 @@ return [
         ],
         // ADD THIS: The Admin API guard
         'admin' => [
-            'driver' => 'sanctum',
+            'driver' => 'session',
             'provider' => 'admins',
         ],
     ],
@@ -116,14 +116,12 @@ return [
             'throttle' => 60,
         ],
 
-        'passwords' => [
-            'merchants' => [
-                'provider' => 'merchants',
-                'table' => 'password_reset_tokens',
-                'expire' => 60,
-                'throttle' => 60,
-            ]
-        ]
+        'merchants' => [
+            'provider' => 'merchants',
+            'table' => 'password_reset_tokens',
+            'expire' => 60,
+            'throttle' => 60,
+        ],
     ],
 
     /*

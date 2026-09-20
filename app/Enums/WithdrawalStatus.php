@@ -8,4 +8,5 @@ enum WithdrawalStatus: string
     case PROCESSING = 'PROCESSING';
     case SUCCESS = 'SUCCESS';
     case FAILED = 'FAILED';
+    case CANCELLED = 'CANCELLED';
 }

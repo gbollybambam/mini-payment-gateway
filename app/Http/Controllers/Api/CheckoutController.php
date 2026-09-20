@@ -46,15 +46,16 @@ class CheckoutController extends Controller
     public function process(ProcessCheckoutRequest $request, string $token): JsonResponse
     {
         $link = PaymentLink::where('checkout_token', $token)->firstOrFail();
-
         $this->checkLinkValidity($link);
 
-        // Generate a unique reference for this specific transaction attempt
         $transactionReference = 'chk_' . Str::random(16);
+
+        // Resolve current active provider dynamically
+        $activeProvider = config('services.active_provider', 'paystack');
 
         $transaction = Transaction::create([
             'merchant_id' => $link->merchant_id,
-            'provider' => 'cray',
+            'provider' => $activeProvider,
             'customer_email' => $request->validated('customer_email'),
             'reference' => $transactionReference,
             'amount' => $link->amount,
@@ -93,6 +94,7 @@ class CheckoutController extends Controller
      */
     public function callback(string $token): \Illuminate\Http\RedirectResponse
     {
+        $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
         $link = PaymentLink::with(['merchant.settings'])->where('checkout_token', $token)->firstOrFail();
 
         // Get the most recent transaction attempt for this link
@@ -163,14 +165,17 @@ class CheckoutController extends Controller
         // Determine where to redirect the customer based on the final status
         if ($transaction->status === PaymentStatus::SUCCESS) {
             // PRD Section 8 & 16: Use link specific redirect, fallback to merchant global success URL
-            $successUrl = $link->redirect_url ?? $link->merchant->settings?->success_url ?? 'https://pay.example.com/payment-success';
+            $successUrl = $link->redirect_url
+                ?? $link->merchant->settings?->success_url
+                ?? "{$frontendUrl}/payment-success";
 
             // Append the transaction reference so the merchant's frontend can display a receipt
             return redirect()->away("{$successUrl}?reference={$transaction->reference}");
         }
 
         // Handle Failure/Cancellation
-        $cancelUrl = $link->merchant->settings?->cancel_url ?? 'https://pay.example.com/payment-failed';
+        $cancelUrl = $link->merchant->settings?->cancel_url
+            ?? "{$frontendUrl}/payment-failed";
         return redirect()->away("{$cancelUrl}?reference={$transaction->reference}");
     }
 

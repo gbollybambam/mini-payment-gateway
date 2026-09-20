@@ -2,7 +2,6 @@
 
 namespace Database\Seeders;
 
-use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
@@ -10,22 +9,41 @@ class DatabaseSeeder extends Seeder
 {
     use WithoutModelEvents;
 
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // User::factory(10)->create();
+        // 1. Setup Default Admin
+        \App\Models\Admin::updateOrCreate(
+            ['email' => 'admin@gateway.local'],
+            [
+                'name' => 'Super Admin',
+                'password' => \Illuminate\Support\Facades\Hash::make('SecureAdmin123!'),
+            ]
+        );
 
-        \App\Models\Admin::create([
-            'name' => 'Super Admin',
-            'email' => 'admin@gateway.local',
-            'password' => \Illuminate\Support\Facades\Hash::make('SecureAdmin123!'),
-        ]);
+        // 2. Setup Paystack (Active)
+        \App\Models\Provider::updateOrCreate(
+            ['name' => 'Paystack'],
+            [
+                'is_active' => true,
+                'configuration' => [
+                    'public_key' => 'pk_test_placeholder', // Update via Admin UI
+                    'secret_key' => 'sk_test_placeholder', // Update via Admin UI
+                ],
+            ]
+        );
 
-        // User::factory()->create([
-        //     'name' => 'Test User',
-        //     'email' => 'test@example.com',
-        // ]);
+        // 3. Setup Cray (Inactive)
+        \App\Models\Provider::updateOrCreate(
+            ['name' => 'Cray'],
+            [
+                'is_active' => false,
+                'configuration' => [
+                    'public_key' => 'cray_pk_test_placeholder', // Update via Admin UI
+                    'secret_key' => 'cray_sk_test_placeholder', // Update via Admin UI
+                    'environment' => 'sandbox',
+                    'default_subaccount_token' => 'default_token_placeholder'
+                ],
+            ]
+        );
     }
 }

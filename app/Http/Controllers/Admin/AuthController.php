@@ -3,42 +3,42 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Models\Admin;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Hash;
-use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\JsonResponse;
 
 class AuthController extends Controller
 {
     public function login(Request $request): JsonResponse
     {
-        $request->validate([
-            'email' => 'required|email',
-            'password' => 'required',
+        $credentials = $request->validate([
+            'email' => ['required', 'email'],
+            'password' => ['required'],
         ]);
 
-        $admin = Admin::where('email', $request->email)->first();
+        // MUST specify guard('admin') so it doesn't log them in as a merchant!
+        if (Auth::guard('admin')->attempt($credentials)) {
+            // This is the magic line that creates the persistent cookie
+            $request->session()->regenerate();
 
-        if (! $admin || ! Hash::check($request->password, $admin->password)) {
             return response()->json([
-                'status' => 'error',
-                'message' => 'Invalid admin credentials.',
-            ], Response::HTTP_UNAUTHORIZED);
+                'status' => 'success',
+                'message' => 'Admin authenticated.'
+            ]);
         }
 
-        $token = $admin->createToken('admin-access')->plainTextToken;
-
         return response()->json([
-            'status' => 'success',
-            'data' => [
-                'token' => $token,
-                'admin' => [
-                    'id' => $admin->id,
-                    'name' => $admin->name,
-                    'email' => $admin->email,
-                ],
-            ]
-        ], Response::HTTP_OK);
+            'status' => 'error',
+            'message' => 'Invalid admin credentials.'
+        ], 401);
+    }
+
+    public function logout(Request $request): JsonResponse
+    {
+        Auth::guard('admin')->logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
+        return response()->json(['status' => 'success']);
     }
 }

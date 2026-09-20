@@ -4,6 +4,7 @@ namespace App\Http\Requests\ApiKey;
 
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreApiKeyRequest extends FormRequest
 {
@@ -24,7 +25,7 @@ class StoreApiKeyRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:255'],
-            'environment' => ['required', 'string', 'in:sandbox,production'],
+            'environment' => ['required', 'string', Rule::in(['test', 'live'])], // <--- Ensure 'test' and 'live' are allowed
         ];
     }
 }

@@ -11,6 +11,9 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Facades\Auth;
+
+
 class AuthController extends Controller
 {
     /**
@@ -18,36 +21,52 @@ class AuthController extends Controller
      */
     public function register(RegisterMerchantRequest $request): JsonResponse
     {
-        $merchant = Merchant::create($request->validated());
+        // 1. Check if the frontend sent an Idempotency Key
+        $idempotencyKey = $request->header('Idempotency-Key');
+        $cacheKey = 'idemp_reg_' . $idempotencyKey;
 
-        // Initialize default merchant settings record
-        $merchant->settings()->create([
-            'brand_name' => $merchant->business_name,
-            'webhook_secret' => 'whsec_' . \Illuminate\Support\Str::random(32),
-        ]);
+        // 2. If we already processed this exact request successfully, return the cached response immediately!
+        if ($idempotencyKey && \Illuminate\Support\Facades\Cache::has($cacheKey)) {
+            return \Illuminate\Support\Facades\Cache::get($cacheKey);
+        }
 
+        // 3. Normal Registration Logic
+        $merchant = \Illuminate\Support\Facades\DB::transaction(function () use ($request) {
+            $merchant = Merchant::create($request->validated());
 
-        \App\Models\Wallet::create([
-            'merchant_id' => $merchant->id,
-            'currency' => $merchant->currency,
-            'available_balance' => 0,
-            'pending_balance' => 0,
-        ]);
+            $merchant->settings()->create([
+                'brand_name' => $merchant->business_name,
+                'webhook_secret' => 'whsec_' . \Illuminate\Support\Str::random(32),
+                'cray_subaccount_token' => 'cray_sub_' . \Illuminate\Support\Str::random(24),
+            ]);
 
-        // Send verification email
+            \App\Models\Wallet::create([
+                'merchant_id' => $merchant->id,
+                'currency' => $merchant->currency,
+                'available_balance' => 0,
+                'pending_balance' => 0,
+            ]);
+
+            return $merchant;
+        });
+
         $merchant->sendEmailVerificationNotification();
 
-        $token = $merchant->createToken('auth-token')->plainTextToken;
+        Auth::guard('web')->login($merchant);
+        $request->session()->regenerate();
 
-        return response()->json([
+        $response = response()->json([
             'status' => 'success',
-            'message' => 'Merchant registered successfully. Please verify your email.',
-            'data' => [
-                'merchant' => new MerchantResource($merchant),
-                'token' => $token,
-                'token_type' => 'Bearer',
-            ],
+            'message' => 'Merchant registered successfully.',
+            'data' => new MerchantResource($merchant),
         ], Response::HTTP_CREATED);
+
+        // 4. Save the successful response in the cache for 24 hours
+        if ($idempotencyKey) {
+            \Illuminate\Support\Facades\Cache::put($cacheKey, $response, now()->addHours(24));
+        }
+
+        return $response;
     }
 
     /**
@@ -55,26 +74,21 @@ class AuthController extends Controller
      */
     public function login(LoginMerchantRequest $request): JsonResponse
     {
-        $merchant = Merchant::where('email', $request->validated('email'))->first();
+        // Auth::attempt securely hashes and checks the password, and sets the HttpOnly cookie
+        if (Auth::guard('web')->attempt($request->only('email', 'password'))) {
+            $request->session()->regenerate();
 
-        if (! $merchant || ! Hash::check($request->validated('password'), $merchant->password)) {
             return response()->json([
-                'status' => 'error',
-                'message' => 'Invalid email or password provided.',
-            ], Response::HTTP_UNAUTHORIZED);
+                'status' => 'success',
+                'message' => 'Authentication successful.',
+                'data' => new MerchantResource(Auth::guard('web')->user()),
+            ], Response::HTTP_OK);
         }
 
-        $token = $merchant->createToken('auth-token')->plainTextToken;
-
         return response()->json([
-            'status' => 'success',
-            'message' => 'Authentication successful.',
-            'data' => [
-                'merchant' => new MerchantResource($merchant),
-                'token' => $token,
-                'token_type' => 'Bearer',
-            ],
-        ], Response::HTTP_OK);
+            'status' => 'error',
+            'message' => 'Invalid email or password provided.',
+        ], Response::HTTP_UNAUTHORIZED);
     }
 
     /**
@@ -82,10 +96,13 @@ class AuthController extends Controller
      */
     public function logout(Request $request): JsonResponse
     {
-        $request->user()->currentAccessToken()->delete();
+        Auth::guard('web')->logout();
+
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
 
         return response()->json([
-            'status' =>  'success',
+            'status' => 'success',
             'message' => 'Logged out successfully.',
         ], Response::HTTP_OK);
     }

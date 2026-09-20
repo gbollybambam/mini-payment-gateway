@@ -24,7 +24,7 @@ return new class extends Migration
             $table->string('currency', 3);
 
             $table->decimal('balance_before', 19, 4);
-            $table->decimal('balance_after', 9, 4);
+            $table->decimal('balance_after', 19, 4);
 
             $table->string('description')->nullable();
             $table->string('reference')->unique();

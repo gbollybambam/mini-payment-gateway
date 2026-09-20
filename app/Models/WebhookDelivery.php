@@ -2,13 +2,17 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Concerns\HasUuids;
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 class WebhookDelivery extends Model
 {
-    use HasFactory, HasUuids;
+    protected $table = 'webhook_deliveries';
+
+    protected $primaryKey = 'id';
+    public $incrementing = false;
+    protected $keyType = 'string';
 
     protected $fillable = [
         'merchant_id',
@@ -20,11 +24,23 @@ class WebhookDelivery extends Model
         'is_successful',
     ];
 
-    protected function casts(): array
+    protected $casts = [
+        'payload' => 'array',
+        'is_successful' => 'boolean',
+    ];
+
+    // Automatically generate UUID for 'id' on creation
+    protected static function booted()
     {
-        return [
-            'payload' => 'array',
-            'is_successful' => 'boolean',
-        ];
+        static::creating(function ($model) {
+            if (empty($model->id)) {
+                $model->id = (string) Str::uuid();
+            }
+        });
+    }
+
+    public function merchant(): BelongsTo
+    {
+        return $this->belongsTo(Merchant::class);
     }
 }

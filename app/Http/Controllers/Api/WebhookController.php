@@ -21,7 +21,9 @@ class WebhookController extends Controller
 
     public function handle(Request $request, string $provider): JsonResponse
     {
-        if (strtolower($provider) !== 'cray') {
+        $allowedProviders = ['cray', 'paystack'];
+
+        if (!in_array(strtolower($provider), $allowedProviders)) {
             return response()->json(['status' => 'error', 'message' => 'Unsupported provider.'], Response::HTTP_BAD_REQUEST);
         }
 
@@ -116,6 +118,7 @@ class WebhookController extends Controller
         if (str_starts_with($verifiedData['event'], 'withdrawal.')) {
             return DB::transaction(function () use ($verifiedData) {
                 $withdrawal = \App\Models\Withdrawal::where('provider_reference', $verifiedData['provider_reference'])
+                    ->orWhere('reference', $verifiedData['provider_reference'])
                     ->lockForUpdate()
                     ->first();
 

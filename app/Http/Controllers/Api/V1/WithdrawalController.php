@@ -62,8 +62,8 @@ class WithdrawalController extends Controller
     }
 
     public function initialize(InitializeWithdrawalRequest $request): JsonResponse
-    {   
-        $merchant = $request->user();
+    {
+        $merchant = $request->user() ?? $request->merchant;
         $validated = $request->validated();
 
         $wallet = $merchant->wallets()->where('currency', $validated['currency'])->first();
@@ -100,8 +100,15 @@ class WithdrawalController extends Controller
             });
 
         } catch (\Exception $e) {
-            // Catch insufficient balance or duplicate reference
-            return response()->json(['status' => 'error', 'message' => $e->getMessage()], Response::HTTP_BAD_REQUEST);
+            DB::rollBack();
+
+            // Extract the real exception message thrown by PaystackProvider
+            $reason = $e->getMessage() ?: 'Payout provider rejected transaction';
+
+            return response()->json([
+                'status' => 'error',
+                'message' => "Payout failed: {$reason}. Funds have been refunded to your wallet balance.",
+            ], Response::HTTP_BAD_REQUEST);
         }
 
         // 2. Hand off to Provider (Outside DB transaction)
@@ -153,5 +160,73 @@ class WithdrawalController extends Controller
             'message' => 'Withdrawal initiated successfully.',
             'data' => new WithdrawalResource($withdrawal),
         ], Response::HTTP_CREATED);
+    }
+
+    public function verify(Request $request, string $id): JsonResponse
+    {
+        $merchant = $request->user() ?? $request->merchant;
+
+        $withdrawal = Withdrawal::where('merchant_id', $merchant->id)
+            ->where('id', $id)
+            ->firstOrFail();
+
+        // If it's already finished, don't waste an API call
+        if (in_array($withdrawal->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED, \App\Enums\WithdrawalStatus::CANCELLED])) {
+            return response()->json([
+                'status' => 'success',
+                'message' => "Withdrawal is already {$withdrawal->status->value}.",
+                'data' => new WithdrawalResource($withdrawal)
+            ], Response::HTTP_OK);
+        }
+
+        try {
+            $verificationResult = $this->paymentProvider->verifyPayout($withdrawal->provider_reference ?? $withdrawal->reference);
+        } catch (\Exception $e) {
+            return response()->json(['status' => 'error', 'message' => 'Provider verification failed: ' . $e->getMessage()], Response::HTTP_BAD_GATEWAY);
+        }
+
+        return DB::transaction(function () use ($withdrawal, $verificationResult, $merchant) {
+            $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
+
+            // Guard against race conditions (e.g. webhook arrived during API call)
+            if (in_array($locked->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED])) {
+                return response()->json(['status' => 'success', 'data' => new WithdrawalResource($locked)]);
+            }
+
+            // Normalization: Check if provider says SUCCESS
+            if (str_contains(strtoupper($verificationResult['status']), 'SUCCESS')) {
+                $locked->update(['status' => \App\Enums\WithdrawalStatus::SUCCESS]);
+
+                \App\Jobs\DispatchMerchantWebhook::dispatch($merchant, 'withdrawal.success', $locked->toArray());
+            }
+            // Check if provider explicitly says it FAILED or REVERSED
+            elseif (in_array(strtoupper($verificationResult['status']), ['FAILED', 'REVERSED', 'REJECTED'])) {
+                $locked->update([
+                    'status' => \App\Enums\WithdrawalStatus::FAILED,
+                    'failure_reason' => $verificationResult['reason'] ?? 'Bank rejected transfer'
+                ]);
+
+                // REFUND THE MERCHANT
+                $wallet = $merchant->wallets()->where('currency', $locked->currency)->first();
+                if ($wallet) {
+                    $this->ledgerService->credit(
+                        wallet: $wallet,
+                        amount: $locked->amount,
+                        type: \App\Enums\LedgerEntryType::REVERSAL,
+                        reference: 'ldg_rev_' . $locked->reference,
+                        transaction: null,
+                        description: "Reversal for failed payout: {$locked->reference}"
+                    );
+                }
+
+                \App\Jobs\DispatchMerchantWebhook::dispatch($merchant, 'withdrawal.failed', $locked->toArray());
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Withdrawal status synced.',
+                'data' => new WithdrawalResource($locked->fresh())
+            ], Response::HTTP_OK);
+        });
     }
 }

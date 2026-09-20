@@ -33,8 +33,18 @@ class PaymentLinkController extends Controller
 
     public function store(StorePaymentLinkRequest $request): JsonResponse
     {
+        $validated = $request->validated();
+
+        // THE FIX: Map the frontend's customer_email into the backend's JSON array
+        $customerInformation = null;
+        if (!empty($validated['customer_email'])) {
+            $customerInformation = ['email' => $validated['customer_email']];
+        }
+        unset($validated['customer_email']); // Remove to prevent mass-assignment errors
+
         $link = $request->user()->paymentLinks()->create(
-            array_merge($request->validated(), [
+            array_merge($validated, [
+                'customer_information' => $customerInformation,
                 'checkout_token' => Str::random(32),
                 'status' => PaymentLinkStatus::ACTIVE,
             ])
