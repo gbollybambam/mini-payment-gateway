@@ -6,9 +6,6 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('api_keys', function (Blueprint $table) {
@@ -18,15 +15,17 @@ return new class extends Migration
             $table->string('environment');
             $table->string('key_prefix');
             $table->string('secret_key')->unique();
+
+            // NEW COLUMNS FOR GRANULAR CONTROL
+            $table->json('scopes')->nullable(); // Stores ['payments:write', 'wallets:read'] or ['*'] for full access
+            $table->timestamp('expires_at')->nullable(); // Null means it never expires naturally
+
             $table->timestamp('last_used_at')->nullable();
             $table->timestamp('revoked_at')->nullable();
             $table->timestamps();
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
         Schema::dropIfExists('api_keys');

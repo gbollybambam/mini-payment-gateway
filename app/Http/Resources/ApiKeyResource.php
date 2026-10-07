@@ -9,12 +9,17 @@ class ApiKeyResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
+        // Fully mask the key for the table (e.g., sk_test_********************)
+        $maskedToken = $this->key_prefix . '_********************';
+
         return [
             'id' => $this->id,
             'name' => $this->name,
             'environment' => $this->environment,
-            'key' => $this->key, // The masked version (e.g., sk_test_••••1234)
-            'plain_text_key' => $this->whenNotNull($this->plain_text_key ?? null), // <--- Expose only upon creation/rotation
+            'token' => $maskedToken, // Always fully masked for the table view
+            'plain_text_key' => $this->plain_text_key, // Only populated during creation/rotation
+            'scopes' => $this->scopes ?? ['*'],
+            'expires_at' => $this->expires_at,
             'last_used_at' => $this->last_used_at,
             'revoked_at' => $this->revoked_at,
             'created_at' => $this->created_at,

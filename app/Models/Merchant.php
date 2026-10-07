@@ -30,6 +30,7 @@ class Merchant extends Authenticable implements MustVerifyEmail
         'password',
         'email_verified_at',
         'status',
+        'is_active',
     ];
 
     /**
@@ -88,17 +89,6 @@ class Merchant extends Authenticable implements MustVerifyEmail
     public function webhookDeliveries(): HasMany
     {
         return $this->hasMany(WebhookDelivery::class);
-    }
-
-    /**
-     * Send the email verification notification asynchronously.
-     */
-    public function sendEmailVerificationNotification()
-    {
-        // We wrap the email in "dispatch", which throws it into the background queue!
-        dispatch(function () {
-            $this->notify(new \Illuminate\Auth\Notifications\VerifyEmail);
-        });
     }
 
     /**

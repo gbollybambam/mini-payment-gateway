@@ -21,7 +21,6 @@ class MerchantSetting extends Model
         'cancel_url',
         'webhook_url',
         'webhook_secret',
-        'cray_subaccount_token',
     ];
 
     protected $hidden = [

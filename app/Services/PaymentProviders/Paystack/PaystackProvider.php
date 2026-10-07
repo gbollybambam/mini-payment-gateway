@@ -206,20 +206,33 @@ class PaystackProvider implements PaymentProviderInterface
         }
     }
 
-    public function createMerchantSubaccount(Merchant $merchant): string
+    public function resolveAccount(string $accountNumber, string $bankCode): array
     {
-        $response = $this->client()->post("{$this->baseUrl}/subaccount", [
-            'business_name' => $merchant->business_name,
-            'settlement_bank' => $merchant->bank_code ?? '058',
-            'account_number' => $merchant->account_number ?? '0000000000',
-            'percentage_charge' => 1.5,
+        $response = $this->client()->get("{$this->baseUrl}/bank/resolve", [
+            'account_number' => $accountNumber,
+            'bank_code' => $bankCode,
         ]);
 
         if (!$response->successful() || !$response->json('status')) {
-            Log::error('Paystack Subaccount Creation Failed', ['response' => $response->body()]);
-            throw new \Exception('Failed to create provider subaccount: ' . $response->json('message'));
+            throw new \Exception('Could not resolve account name. Please check the account number and bank.');
         }
 
-        return $response->json('data.subaccount_code');
+        return [
+            'account_name' => $response->json('data.account_name'),
+            'account_number' => $response->json('data.account_number'),
+        ];
+    }
+
+    public function getBanks(string $currency): array
+    {
+        $response = $this->client()->get("{$this->baseUrl}/bank", [
+            'currency' => $currency,
+        ]);
+
+        if (!$response->successful() || !$response->json('status')) {
+            throw new \Exception('Failed to fetch supported banks from the provider.');
+        }
+
+        return $response->json('data');
     }
 }

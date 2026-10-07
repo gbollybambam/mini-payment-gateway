@@ -25,7 +25,10 @@ class WithdrawalController extends Controller
 
     public function index(GetWithdrawalsRequest $request): JsonResponse
     {
-        $query = $request->user()->withdrawals()->latest();
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
+        $query = $merchant->withdrawals()->latest();
+
         $validated = $request->validated();
 
         if (!empty($validated['status'])) {
@@ -53,7 +56,9 @@ class WithdrawalController extends Controller
 
     public function show(Request $request, string $id): JsonResponse
     {
-        $withdrawal = $request->user()->withdrawals()->findOrFail($id);
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
+        $withdrawal = $merchant->withdrawals()->findOrFail($id);
 
         return response()->json([
             'status' => 'success',
@@ -63,7 +68,8 @@ class WithdrawalController extends Controller
 
     public function initialize(InitializeWithdrawalRequest $request): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
         $validated = $request->validated();
 
         $wallet = $merchant->wallets()->where('currency', $validated['currency'])->first();
@@ -74,7 +80,6 @@ class WithdrawalController extends Controller
 
         try {
             $withdrawal = DB::transaction(function () use ($merchant, $wallet, $validated) {
-                // LedgerService->debit will THROW an exception if balance is insufficient
                 $this->ledgerService->debit(
                     wallet: $wallet,
                     amount: $validated['amount'],
@@ -98,11 +103,8 @@ class WithdrawalController extends Controller
                     'metadata' => $validated['metadata'] ?? [],
                 ]);
             });
-
         } catch (\Exception $e) {
             DB::rollBack();
-
-            // Extract the real exception message thrown by PaystackProvider
             $reason = $e->getMessage() ?: 'Payout provider rejected transaction';
 
             return response()->json([
@@ -111,7 +113,6 @@ class WithdrawalController extends Controller
             ], Response::HTTP_BAD_REQUEST);
         }
 
-        // 2. Hand off to Provider (Outside DB transaction)
         try {
             $providerResponse = $this->paymentProvider->initializePayout($withdrawal);
 
@@ -124,7 +125,6 @@ class WithdrawalController extends Controller
                 'provider_reference' => $providerResponse['provider_reference'],
                 'fee' => $providerResponse['fee'] ?? 0,
             ]);
-    
         } catch (\Exception $e) {
             DB::transaction(function () use ($withdrawal, $wallet, $e) {
                 $withdrawal->update([
@@ -135,7 +135,7 @@ class WithdrawalController extends Controller
                 $this->ledgerService->credit(
                     wallet: $wallet,
                     amount: $withdrawal->amount,
-                    type: LedgerEntryType::REVERSAL, // Refund the money back
+                    type: LedgerEntryType::REVERSAL,
                     reference: 'ldg_rev_' . $withdrawal->reference,
                     transaction: null,
                     description: "Reversal for failed withdrawal: {$withdrawal->reference}"
@@ -148,7 +148,6 @@ class WithdrawalController extends Controller
             ], Response::HTTP_BAD_GATEWAY);
         }
 
-        // Dispatch Webhook
         \App\Jobs\DispatchMerchantWebhook::dispatch(
             $merchant,
             'withdrawal.pending',
@@ -164,13 +163,13 @@ class WithdrawalController extends Controller
 
     public function verify(Request $request, string $id): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
 
         $withdrawal = Withdrawal::where('merchant_id', $merchant->id)
             ->where('id', $id)
             ->firstOrFail();
 
-        // If it's already finished, don't waste an API call
         if (in_array($withdrawal->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED, \App\Enums\WithdrawalStatus::CANCELLED])) {
             return response()->json([
                 'status' => 'success',
@@ -188,25 +187,19 @@ class WithdrawalController extends Controller
         return DB::transaction(function () use ($withdrawal, $verificationResult, $merchant) {
             $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
 
-            // Guard against race conditions (e.g. webhook arrived during API call)
             if (in_array($locked->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED])) {
                 return response()->json(['status' => 'success', 'data' => new WithdrawalResource($locked)]);
             }
 
-            // Normalization: Check if provider says SUCCESS
             if (str_contains(strtoupper($verificationResult['status']), 'SUCCESS')) {
                 $locked->update(['status' => \App\Enums\WithdrawalStatus::SUCCESS]);
-
                 \App\Jobs\DispatchMerchantWebhook::dispatch($merchant, 'withdrawal.success', $locked->toArray());
-            }
-            // Check if provider explicitly says it FAILED or REVERSED
-            elseif (in_array(strtoupper($verificationResult['status']), ['FAILED', 'REVERSED', 'REJECTED'])) {
+            } elseif (in_array(strtoupper($verificationResult['status']), ['FAILED', 'REVERSED', 'REJECTED'])) {
                 $locked->update([
                     'status' => \App\Enums\WithdrawalStatus::FAILED,
                     'failure_reason' => $verificationResult['reason'] ?? 'Bank rejected transfer'
                 ]);
 
-                // REFUND THE MERCHANT
                 $wallet = $merchant->wallets()->where('currency', $locked->currency)->first();
                 if ($wallet) {
                     $this->ledgerService->credit(
@@ -228,5 +221,59 @@ class WithdrawalController extends Controller
                 'data' => new WithdrawalResource($locked->fresh())
             ], Response::HTTP_OK);
         });
+    }
+
+    public function getBanks(Request $request): JsonResponse
+    {
+        $currency = $request->query('currency', 'NGN');
+
+        try {
+            /** @var \App\Services\PaymentProviders\ProviderFactory $factory */
+            $factory = app(\App\Services\PaymentProviders\ProviderFactory::class);
+            $activeProviderName = $factory->getActiveProviderName();
+            $paymentProvider = $factory->make($activeProviderName);
+
+            $banks = $paymentProvider->getBanks($currency);
+
+            return response()->json([
+                'status' => 'success',
+                'data' => $banks
+            ], Response::HTTP_OK);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage()
+            ], Response::HTTP_BAD_GATEWAY);
+        }
+    }
+
+    public function resolveAccount(Request $request): JsonResponse
+    {
+        $request->validate([
+            'account_number' => 'required|string',
+            'bank_code' => 'required|string',
+        ]);
+
+        try {
+            /** @var \App\Services\PaymentProviders\ProviderFactory $factory */
+            $factory = app(\App\Services\PaymentProviders\ProviderFactory::class);
+            $activeProviderName = $factory->getActiveProviderName();
+            $paymentProvider = $factory->make($activeProviderName);
+
+            $result = $paymentProvider->resolveAccount(
+                $request->input('account_number'),
+                $request->input('bank_code')
+            );
+
+            return response()->json([
+                'status' => 'success',
+                'data' => $result
+            ], Response::HTTP_OK);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage()
+            ], Response::HTTP_BAD_REQUEST);
+        }
     }
 }

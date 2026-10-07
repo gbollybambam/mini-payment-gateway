@@ -8,15 +8,21 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 use App\Models\Transaction;
+use App\Models\Wallet;
 
 class WalletController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
-        $wallet = $merchant->wallets()->firstOrFail();
+        $merchant = $this->getMerchantContext($request);
+        $merchantCurrency = $merchant->currency ?? 'NGN';
 
-        // Calculate true pending balance dynamically for this wallet's currency
+        // FIX: Always ensure a wallet is returned, never 404.
+        $wallet = Wallet::firstOrCreate(
+            ['merchant_id' => $merchant->id, 'currency' => $merchantCurrency],
+            ['available_balance' => 0, 'pending_balance' => 0]
+        );
+
         $truePendingSum = Transaction::where('merchant_id', $merchant->id)
             ->where('currency', $wallet->currency)
             ->where('status', 'PENDING')
@@ -28,7 +34,7 @@ class WalletController extends Controller
                 'id' => $wallet->id,
                 'currency' => $wallet->currency,
                 'available_balance' => (float) $wallet->available_balance,
-                'pending_balance' => (float) $truePendingSum, // Use the dynamic sum
+                'pending_balance' => (float) $truePendingSum,
                 'updated_at' => $wallet->updated_at?->toIso8601String(),
             ]
         ], Response::HTTP_OK);
@@ -36,12 +42,14 @@ class WalletController extends Controller
 
     public function ledger(Request $request): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        $merchant = $this->getMerchantContext($request);
         $wallet = $merchant->wallets()->firstOrFail();
-
-        // Ensure pagination is dynamic based on frontend request
         $perPage = $request->input('per_page', 20);
-        $entries = $wallet->ledgerEntries()->latest()->paginate($perPage);
+
+        $entries = $wallet->ledgerEntries()
+            ->with('transaction:id,amount,fee,net_amount')
+            ->latest()
+            ->paginate($perPage);
 
         return response()->json([
             'status' => 'success',

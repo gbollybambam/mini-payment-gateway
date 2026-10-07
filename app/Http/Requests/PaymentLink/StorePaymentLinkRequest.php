@@ -23,6 +23,9 @@ class StorePaymentLinkRequest extends FormRequest
      */
     public function rules(): array
     {
+        // 1. THE FIX: Resolve the true Merchant context inside the Form Request
+        $merchant = $this->user()->merchant ?? $this->user();
+
         return [
             'amount' => ['required', 'numeric', 'min:1'],
             'currency' => [
@@ -30,9 +33,9 @@ class StorePaymentLinkRequest extends FormRequest
                 'string',
                 'size:3',
                 'uppercase',
-                // Custom rule to ensure the wallet exists
-                function (string $attribute, mixed $value, \Closure $fail) {
-                    $walletExists = \App\Models\Wallet::where('merchant_id', $this->user()->id)
+                // 2. THE FIX: Use $merchant->id instead of $this->user()->id
+                function (string $attribute, mixed $value, \Closure $fail) use ($merchant) {
+                    $walletExists = \App\Models\Wallet::where('merchant_id', $merchant->id)
                         ->where('currency', $value)
                         ->exists();
 
@@ -46,11 +49,13 @@ class StorePaymentLinkRequest extends FormRequest
                 'required',
                 'string',
                 'max:100',
-                Rule::unique('payment_links')->where(fn ($query) => $query->where('merchant_id', $this->user()->id)),
+                // 3. THE FIX: Ensure uniqueness checks against the parent Merchant's links
+                Rule::unique('payment_links')->where(fn($query) => $query->where('merchant_id', $merchant->id)),
             ],
-            'customer_information' => ['nullable', 'array'],
-            'customer_information.email' => ['nullable', 'email'],
-            'customer_information.name' => ['nullable', 'string', 'max:255'],
+
+            // 4. THE FIX: Validate 'customer_email' exactly as the React frontend sends it
+            'customer_email' => ['nullable', 'email', 'max:255'],
+
             'expiry' => ['nullable', 'date', 'after:now'],
             'redirect_url' => ['nullable', 'url', 'max:255'],
             'metadata' => ['nullable', 'array'],

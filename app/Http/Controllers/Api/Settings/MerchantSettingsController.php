@@ -13,15 +13,13 @@ use Illuminate\Support\Facades\Hash;
 
 class MerchantSettingsController extends Controller
 {
-    /**
-     * Get merchant settings.
-     */
-    public function show(Request $request):JsonResponse
+    public function show(Request $request): JsonResponse
     {
-        $merchant = $request->user();
+        $merchant = $this->getMerchantContext($request);
+
         $settings = $merchant->settings()->firstOrCreate(
             ['merchant_id' => $merchant->id],
-            ['brand_name' => $merchant->business_name, 'webhooh_secret' => 'whsec_' . Str::random(32)]
+            ['brand_name' => $merchant->business_name, 'webhook_secret' => 'whsec_' . Str::random(32)]
         );
 
         return response()->json([
@@ -50,21 +48,17 @@ class MerchantSettingsController extends Controller
         ], Response::HTTP_OK);
     }
 
-    /**
-     * Update settings.  
-     */
     public function update(UpdateMerchantSettingsRequest $request): JsonResponse
     {
-        $merchant = $request->user();
+        $merchant = $this->getMerchantContext($request);
         $validated = $request->validated();
 
         if (isset($validated['email']) && $validated['email'] !== $merchant->email) {
             $merchant->email = $validated['email'];
-            $merchant->email_verified_at = null; // Revoke verification status
-            $merchant->sendEmailVerificationNotification(); // Send new link
+            $merchant->email_verified_at = null;
+            $merchant->sendEmailVerificationNotification();
         }
 
-        // Update core merchant table fields if present
         if (isset($validated['business_name']) || isset($validated['phone'])) {
             $merchant->fill($request->only(['business_name', 'phone']));
         }
@@ -73,7 +67,6 @@ class MerchantSettingsController extends Controller
             $merchant->save();
         }
 
-        // Update settings table
         $settings = $merchant->settings()->firstOrCreate(['merchant_id' => $merchant->id]);
         $settings->update($request->except(['business_name', 'phone', 'email']));
 
@@ -85,12 +78,11 @@ class MerchantSettingsController extends Controller
         ], Response::HTTP_OK);
     }
 
-    /**
-     * Rotate webhook secret.
-     */
     public function rotateWebhookSecret(Request $request): JsonResponse
     {
-        $settings = $request->user()->settings;
+        $merchant = $this->getMerchantContext($request);
+        $settings = $merchant->settings;
+
         $newSecret = 'whsec_' . Str::random(32);
         $settings->update(['webhook_secret' => $newSecret]);
 
@@ -103,12 +95,22 @@ class MerchantSettingsController extends Controller
         ], Response::HTTP_OK);
     }
 
-    /**
-     * Update authenticated merchant's password.
-     */
     public function updatePassword(UpdatePasswordRequest $request): JsonResponse
     {
-        $request->user()->update([
+        $user = $request->user();
+
+        // 1. Manually check the hash here where the user context is perfectly guaranteed
+        if (! Hash::check($request->validated('current_password'), $user->password)) {
+            return response()->json([
+                'message' => 'Validation failed.',
+                'errors' => [
+                    'current_password' => ['The provided password does not match your current password.']
+                ]
+            ], 422); // 422 triggers the frontend error state perfectly
+        }
+
+        // 2. Update the password
+        $user->update([
             'password' => Hash::make($request->validated('password')),
         ]);
 

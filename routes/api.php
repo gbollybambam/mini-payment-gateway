@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\ApiKeyController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\Settings\MerchantSettingsController;
+use App\Http\Controllers\Api\TransactionController;
 use Illuminate\Support\Facades\Route;
 
 use App\Http\Controllers\Api\Auth\AuthController;
@@ -15,16 +16,25 @@ use App\Http\Controllers\Api\WebhookDeliveryController;
 
 /*
 |--------------------------------------------------------------------------
-| Authentication (Handled natively by statefulApi)
+| Authentication
 |--------------------------------------------------------------------------
 */
 
 Route::prefix('auth')->group(function () {
-    Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:10,1');
-    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
+    Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:5,50');
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:25,1');
 
     Route::post('/forgot-password', [PasswordResetController::class, 'sendResetLink'])->middleware('throttle:5,1');
     Route::post('/reset-password', [PasswordResetController::class, 'reset'])->middleware('throttle:5,1');
+
+    Route::post('/email/verify-otp', [VerificationController::class, 'verifyOtp'])->middleware('throttle:5,1');
+    Route::post('/email/resend-otp', [VerificationController::class, 'resendOtp'])->middleware('throttle:3,1');
+
+    Route::post('/device/verify', [\App\Http\Controllers\Api\Auth\DeviceVerificationController::class, 'verifyDevice'])->middleware('throttle:5,1');
+    Route::post('/device/resend', [\App\Http\Controllers\Api\Auth\DeviceVerificationController::class, 'resendDeviceOtp'])->middleware('throttle:5,1');
+
+    Route::post('/team/accept-invite', [\App\Http\Controllers\Api\Auth\TeamInviteController::class, 'accept']);
+    Route::post('/team/{id}/resend', [\App\Http\Controllers\Api\TeamController::class, 'resendInvite']);
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('/logout', [AuthController::class, 'logout']);
@@ -33,79 +43,110 @@ Route::prefix('auth')->group(function () {
         Route::delete('/sessions/{id}', [SessionController::class, 'revoke']);
     });
 });
+
 /*
 |--------------------------------------------------------------------------
-| Merchant Authenticated Surface
+| Merchant Authenticated Surface (UI API)
 |--------------------------------------------------------------------------
 */
-
 Route::middleware(['auth:sanctum', 'merchant.active'])->group(function () {
+
+    // -----------------------------------------------------------------
+    // EVERYONE (Owner, Admin, Developer, Finance)
+    // -----------------------------------------------------------------
     Route::get('/dashboard/overview', [DashboardController::class, 'overview']);
-
-    Route::get('/api-keys', [ApiKeyController::class, 'index']);
-    Route::post('/api-keys', [ApiKeyController::class, 'store']);
-    Route::delete('/api-keys/{id}', [ApiKeyController::class, 'destroy']);
-    Route::post('/api-keys/{id}/rotate', [ApiKeyController::class, 'rotate']);
-
-    Route::get('/settings', [MerchantSettingsController::class, 'show']);
-    Route::put('/settings', [MerchantSettingsController::class, 'update']);
-    Route::put('/settings/password', [MerchantSettingsController::class, 'updatePassword']);
-    Route::post('/settings/webhook-secret/rotate', [MerchantSettingsController::class, 'rotateWebhookSecret']);
+    Route::get('/transactions', [\App\Http\Controllers\Api\TransactionController::class, 'index']);
+    Route::post('/transactions/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify'])->middleware('throttle:5,1');
 
     Route::get('/payment-links', [\App\Http\Controllers\Api\PaymentLinkController::class, 'index']);
     Route::post('/payment-links', [\App\Http\Controllers\Api\PaymentLinkController::class, 'store']);
     Route::get('/payment-links/{id}', [\App\Http\Controllers\Api\PaymentLinkController::class, 'show']);
     Route::patch('/payment-links/{id}', [\App\Http\Controllers\Api\PaymentLinkController::class, 'update']);
 
+    // UI Dependencies: Everyone needs to read Settings and Wallet basic details to load pages properly
+    Route::get('/settings', [MerchantSettingsController::class, 'show']);
+    Route::match(['put', 'patch'], '/user/password', [MerchantSettingsController::class, 'updatePassword']);
     Route::get('/wallet', [\App\Http\Controllers\Api\WalletController::class, 'index']);
     Route::get('/wallet/balance', [\App\Http\Controllers\Api\WalletController::class, 'index']);
-    Route::get('/wallet/ledger', [\App\Http\Controllers\Api\WalletController::class, 'ledger']);
 
-    Route::get('/transactions', [\App\Http\Controllers\Api\V1\PaymentController::class, 'index']);
-    Route::get('/transactions/{id}', [\App\Http\Controllers\Api\V1\PaymentController::class, 'show']);
-    Route::middleware(['auth:sanctum', 'merchant.active'])->group(function () {
-        Route::post('/transactions/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify'])
-            ->middleware('throttle:5,1');
+    // -----------------------------------------------------------------
+    // TECHNICAL DATA (Owner, Admin, Developer)
+    // -----------------------------------------------------------------
+    Route::middleware('role:admin,developer')->group(function () {
+        Route::get('/api-keys', [ApiKeyController::class, 'index']);
+        Route::post('/api-keys', [ApiKeyController::class, 'store']);
+        Route::delete('/api-keys/{id}', [ApiKeyController::class, 'destroy']);
+        Route::post('/api-keys/{id}/rotate', [ApiKeyController::class, 'rotate']);
+
+        Route::get('/webhook-settings', [WebhookSettingsController::class, 'show']);
+        Route::put('/webhook-settings', [WebhookSettingsController::class, 'update']);
+        Route::post('/webhook-settings/test', [WebhookSettingsController::class, 'test']);
+        Route::get('/webhook-deliveries', [WebhookDeliveryController::class, 'index']);
+        Route::post('/webhook-deliveries/{id}/retry', [WebhookDeliveryController::class, 'retry']);
     });
 
-    Route::get('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'index']);
-    Route::post('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'initialize']);
-    Route::get('/withdrawals/{id}', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'show']);
-    Route::post('/withdrawals/{id}/verify', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'verify'])
-        ->middleware('throttle:10,1');
-});
+    // -----------------------------------------------------------------
+    // MONEY MOVEMENT (Owner, Admin, Finance)
+    // -----------------------------------------------------------------
+    Route::middleware('role:admin,finance')->group(function () {
+        Route::get('/wallet/ledger', [\App\Http\Controllers\Api\WalletController::class, 'ledger']);
 
+        Route::get('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'index']);
+        Route::post('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'initialize']);
+        Route::get('/withdrawals/banks', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'getBanks']);
+        Route::get('/withdrawals/resolve-account', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'resolveAccount']);
+        Route::get('/withdrawals/{id}', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'show']);
+        Route::post('/withdrawals/{id}/verify', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'verify'])->middleware('throttle:10,1');
+    });
 
-Route::middleware(['auth:sanctum', 'merchant.active'])->group(function () {
-    // Webhook Settings
-    Route::get('/webhook-settings', [WebhookSettingsController::class, 'show']);
-    Route::put('/webhook-settings', [WebhookSettingsController::class, 'update']);
-    Route::post('/webhook-settings/test', [WebhookSettingsController::class, 'test']);
+    // -----------------------------------------------------------------
+    // CORE OPERATIONS (Owner, Admin)
+    // -----------------------------------------------------------------
+    Route::middleware('role:admin')->group(function () {
+        Route::get('/team', [\App\Http\Controllers\Api\TeamController::class, 'index']);
+        Route::post('/team', [\App\Http\Controllers\Api\TeamController::class, 'store']);
+        Route::patch('/team/{id}', [\App\Http\Controllers\Api\TeamController::class, 'update']);
+        Route::delete('/team/{id}', [\App\Http\Controllers\Api\TeamController::class, 'destroy']);
 
-    // Webhook Logs & Retries
-    Route::get('/webhook-deliveries', [WebhookDeliveryController::class, 'index']);
-    Route::post('/webhook-deliveries/{id}/retry', [WebhookDeliveryController::class, 'retry']);
+        Route::put('/settings', [MerchantSettingsController::class, 'update']);
+        Route::post('/settings/webhook-secret/rotate', [MerchantSettingsController::class, 'rotateWebhookSecret']);
+    });
 });
 
 /*
 |--------------------------------------------------------------------------
-| External Merchant API (Protected by Secret API Keys)
+| External Merchant API (Protected by Secret API Keys & Scopes)
 |--------------------------------------------------------------------------
 */
 Route::prefix('v1')->middleware(['auth.api_key', 'merchant.active'])->group(function () {
-    Route::get('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'index']);
-    Route::post('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'initialize']);
-    Route::get('/payments/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify']);
-    Route::get('/payments/{id}', [\App\Http\Controllers\Api\V1\PaymentController::class, 'show']);
 
-    Route::get('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'index']);
-    Route::post('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'initialize']);
-    Route::get('/withdrawals/{id}', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'show']);
+    // Payment Endpoints
+    Route::get('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'index'])
+        ->middleware('scope:payments:read');
+
+    Route::post('/payments', [\App\Http\Controllers\Api\V1\PaymentController::class, 'initialize'])
+        ->middleware('scope:payments:write');
+
+    Route::get('/payments/{id}/verify', [\App\Http\Controllers\Api\V1\PaymentController::class, 'verify'])
+        ->middleware('scope:payments:read');
+
+    Route::get('/payments/{id}', [\App\Http\Controllers\Api\V1\PaymentController::class, 'show'])
+        ->middleware('scope:payments:read');
+
+    // Withdrawal Endpoints
+    Route::get('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'index'])
+        ->middleware('scope:withdrawals:read');
+
+    Route::post('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'initialize'])
+        ->middleware('scope:withdrawals:write');
+
+    Route::get('/withdrawals/{id}', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'show'])
+        ->middleware('scope:withdrawals:read');
 });
 
 /*
 |--------------------------------------------------------------------------
-| Public Hosted Checkout API (No auth required)
+| Public Hosted Checkout API & Webhooks
 |--------------------------------------------------------------------------
 */
 Route::prefix('checkout')->group(function () {
@@ -114,11 +155,6 @@ Route::prefix('checkout')->group(function () {
     Route::get('/{token}/callback', [\App\Http\Controllers\Api\CheckoutController::class, 'callback']);
 });
 
-/*
-|--------------------------------------------------------------------------
-| Provider Webhooks
-|--------------------------------------------------------------------------
-*/
 Route::post('/webhooks/{provider}', [\App\Http\Controllers\Api\WebhookController::class, 'handle']);
 
 /*

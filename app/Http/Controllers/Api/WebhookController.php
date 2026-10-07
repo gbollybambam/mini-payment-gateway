@@ -28,7 +28,6 @@ class WebhookController extends Controller
         }
 
         try {
-            // Hand the raw request to the provider. The provider handles its own signature rules (headers vs body hash).
             $verifiedData = $this->paymentProvider->processWebhook($request);
         } catch (\Exception $e) {
             Log::warning("Webhook processing error from provider: {$provider}", ['error' => $e->getMessage()]);
@@ -44,7 +43,12 @@ class WebhookController extends Controller
         // ---------------------------------------------------------
         if (str_starts_with($verifiedData['event'], 'payment.')) {
             return DB::transaction(function () use ($verifiedData) {
-                $transaction = Transaction::where('provider_reference', $verifiedData['provider_reference'])
+
+                // THE FIX: Check BOTH provider_reference AND our local reference!
+                $transaction = Transaction::where(function ($query) use ($verifiedData) {
+                    $query->where('provider_reference', $verifiedData['provider_reference'])
+                        ->orWhere('reference', $verifiedData['provider_reference']);
+                })
                     ->lockForUpdate()
                     ->first();
 
@@ -113,7 +117,7 @@ class WebhookController extends Controller
         }
 
         // ---------------------------------------------------------
-        // 2. WITHDRAWAL WEBHOOKS (Phase 5)
+        // 2. WITHDRAWAL WEBHOOKS
         // ---------------------------------------------------------
         if (str_starts_with($verifiedData['event'], 'withdrawal.')) {
             return DB::transaction(function () use ($verifiedData) {
@@ -140,8 +144,6 @@ class WebhookController extends Controller
                         $withdrawal->toArray()
                     );
                 } elseif ($verifiedData['event'] === 'withdrawal.failed') {
-
-                    // GAP 4 FIX: INJECT THE FAILURE REASON HERE
                     $withdrawal->update([
                         'status' => \App\Enums\WithdrawalStatus::FAILED,
                         'failure_reason' => $verifiedData['reason'] ?? 'Bank network rejected transfer',

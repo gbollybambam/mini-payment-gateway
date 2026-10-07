@@ -34,6 +34,15 @@ class PaymentLinkResource extends JsonResource
             'metadata' => $this->metadata,
             'payment_id' => $this->payment_id,
 
+            // THE FIX: Securely expose the payer details only when eager-loaded
+            'payment' => $this->whenLoaded('payment', function () {
+                return [
+                    'customer_email' => $this->payment?->customer_email,
+                    'amount' => (float) ($this->payment?->amount ?? 0),
+                    'created_at' => $this->payment?->created_at?->toIso8601String(),
+                ];
+            }),
+
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];

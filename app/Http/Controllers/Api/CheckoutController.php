@@ -9,23 +9,18 @@ use App\Http\Requests\Checkout\ProcessCheckoutRequest;
 use App\Http\Resources\Checkout\CheckoutSessionResource;
 use App\Models\PaymentLink;
 use App\Models\Transaction;
-use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\DB;
 
-
 class CheckoutController extends Controller
 {
     public function __construct(
-        private PaymentProviderInterface $paymentProvider,
         private \App\Services\Ledger\LedgerService $ledgerService
     ) {}
 
-    /**
-     * Display the payment link details for the customer.
-     */
     public function show(string $token): JsonResponse
     {
         $link = PaymentLink::with(['merchant.settings'])
@@ -40,9 +35,6 @@ class CheckoutController extends Controller
         ], Response::HTTP_OK);
     }
 
-    /**
-     * Process the payment and return the provider's hosted checkout URL.
-     */
     public function process(ProcessCheckoutRequest $request, string $token): JsonResponse
     {
         $link = PaymentLink::where('checkout_token', $token)->firstOrFail();
@@ -50,12 +42,21 @@ class CheckoutController extends Controller
 
         $transactionReference = 'chk_' . Str::random(16);
 
-        // Resolve current active provider dynamically
-        $activeProvider = config('services.active_provider', 'paystack');
+        try {
+            /** @var \App\Services\PaymentProviders\ProviderFactory $factory */
+            $factory = app(\App\Services\PaymentProviders\ProviderFactory::class);
+            $activeProviderName = $factory->getActiveProviderName();
+            $paymentProvider = $factory->make($activeProviderName);
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'No active payment provider available at this time. Please try again later.'
+            ], Response::HTTP_SERVICE_UNAVAILABLE);
+        }
 
         $transaction = Transaction::create([
             'merchant_id' => $link->merchant_id,
-            'provider' => $activeProvider,
+            'provider' => $activeProviderName,
             'customer_email' => $request->validated('customer_email'),
             'reference' => $transactionReference,
             'amount' => $link->amount,
@@ -64,11 +65,12 @@ class CheckoutController extends Controller
             'metadata' => [
                 'payment_link_id' => $link->id,
                 'customer_name' => $request->validated('customer_name'),
-                'callback_url' => url("/api/checkout/{$token}/callback"),
+                // THE FIX: Explicitly embed the reference into the callback URL
+                'callback_url' => url("/api/checkout/{$token}/callback?reference={$transactionReference}"),
             ],
         ]);
 
-        $providerResponse = $this->paymentProvider->initializePayment($transaction);
+        $providerResponse = $paymentProvider->initializePayment($transaction);
 
         if (! $providerResponse['success']) {
             $transaction->update(['status' => PaymentStatus::FAILED]);
@@ -89,27 +91,41 @@ class CheckoutController extends Controller
         ], Response::HTTP_OK);
     }
 
-    /**
-     * Handle the customer returning from the provider's hosted checkout.
-     */
-    public function callback(string $token): \Illuminate\Http\RedirectResponse
+    // THE FIX: Inject Request to read the precise reference from the URL
+    public function callback(Request $request, string $token): \Illuminate\Http\RedirectResponse
     {
         $frontendUrl = config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:3000'));
         $link = PaymentLink::with(['merchant.settings'])->where('checkout_token', $token)->firstOrFail();
 
-        // Get the most recent transaction attempt for this link
-        $transaction = Transaction::where('merchant_id', $link->merchant_id)
-            ->whereJsonContains('metadata->payment_link_id', $link->id)
-            ->latest()
-            ->first();
+        // THE FIX: Grab the reference strictly from the URL (handles Paystack 'trxref' as well)
+        $reference = $request->query('reference') ?? $request->query('trxref');
 
-        if (! $transaction) {
-            return redirect()->away($link->merchant->settings?->cancel_url ?? 'https://pay.example.com/payment-failed');
+        $transactionQuery = Transaction::where('merchant_id', $link->merchant_id);
+
+        if ($reference) {
+            $transactionQuery->where('reference', $reference);
+        } else {
+            $transactionQuery->whereJsonContains('metadata->payment_link_id', $link->id)->latest();
         }
 
-        // If it's still pending, aggressively verify it now that the customer has returned
-        if ($transaction->status === PaymentStatus::PENDING && $transaction->provider_reference) {
-            $verificationResult = $this->paymentProvider->verifyPayment($transaction->provider_reference);
+        $transaction = $transactionQuery->first();
+
+        if (! $transaction) {
+            return redirect()->away($link->merchant->settings?->cancel_url ?? "{$frontendUrl}/payment-failed");
+        }
+
+        // THE FIX: Fallback to local reference if provider_reference is missing
+        $referenceToVerify = $transaction->provider_reference ?? $transaction->reference;
+
+        if ($transaction->status === PaymentStatus::PENDING && $referenceToVerify) {
+            try {
+                /** @var \App\Services\PaymentProviders\ProviderFactory $factory */
+                $factory = app(\App\Services\PaymentProviders\ProviderFactory::class);
+                $paymentProvider = $factory->make($transaction->provider);
+                $verificationResult = $paymentProvider->verifyPayment($referenceToVerify);
+            } catch (\Exception $e) {
+                return redirect()->away("{$frontendUrl}/payment-failed?reference={$transaction->reference}&error=verification_failed");
+            }
 
             $newStatus = $verificationResult['success']
                 ? PaymentStatus::from($verificationResult['status'])
@@ -121,6 +137,7 @@ class CheckoutController extends Controller
                 if ($lockedTransaction->status === PaymentStatus::PENDING) {
                     $lockedTransaction->update([
                         'status' => $newStatus,
+                        'customer_email' => $lockedTransaction->customer_email ?: ($verificationResult['customer_email'] ?? null),
                         'fee' => $verificationResult['fee'] ?? 0,
                         'net_amount' => ($verificationResult['amount'] ?? $lockedTransaction->amount) - ($verificationResult['fee'] ?? 0),
                     ]);
@@ -156,29 +173,18 @@ class CheckoutController extends Controller
                         ]);
                     }
                 }
-
-                // Sync our outer variable so the redirect logic below knows the final status
                 $transaction = $lockedTransaction;
             });
         }
 
-        // Determine where to redirect the customer based on the final status
         if ($transaction->status === PaymentStatus::SUCCESS) {
-            // PRD Section 8 & 16: Use link specific redirect, fallback to merchant global success URL
-            $successUrl = $link->redirect_url
-                ?? $link->merchant->settings?->success_url
-                ?? "{$frontendUrl}/payment-success";
-
-            // Append the transaction reference so the merchant's frontend can display a receipt
+            $successUrl = $link->redirect_url ?? $link->merchant->settings?->success_url ?? "{$frontendUrl}/payment-success";
             return redirect()->away("{$successUrl}?reference={$transaction->reference}");
         }
 
-        // Handle Failure/Cancellation
-        $cancelUrl = $link->merchant->settings?->cancel_url
-            ?? "{$frontendUrl}/payment-failed";
+        $cancelUrl = $link->merchant->settings?->cancel_url ?? "{$frontendUrl}/payment-failed";
         return redirect()->away("{$cancelUrl}?reference={$transaction->reference}");
     }
-
 
     private function checkLinkValidity(PaymentLink $link): void
     {

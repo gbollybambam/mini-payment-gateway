@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Jobs;
 
 use App\Models\Merchant;
@@ -10,85 +12,87 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class DispatchMerchantWebhook implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public $tries = 5;
+    public int $tries = 5;
+    public array $backoff = [30, 120, 300, 3600]; // PRD: Exponential backoff
 
-    public function backoff(): array
-    {
-        return [10, 30, 120, 300, 900];
-    }
-
-    /**
-     * Create a new job instance.
-     */
     public function __construct(
         public Merchant $merchant,
         public string $event,
-        public array $data
+        public array $payload
     ) {}
 
-    /**
-     * Execute the job.
-     */
     public function handle(): void
     {
         $settings = $this->merchant->settings;
 
-        if (! $settings || ! $settings->webhook_url || ! $settings->webhook_secret) {
+        // Abort if no webhook URL is configured
+        if (!$settings || empty($settings->webhook_url)) {
             return;
         }
 
-        $payload = [
+        $url = $settings->webhook_url;
+        $secret = $settings->webhook_secret;
+
+        $fullPayload = [
             'event' => $this->event,
-            'data' => $this->data,
-            'timestamp' => now()->toIso8601String(),
+            'data' => $this->payload,
         ];
 
-        $jsonPayload = json_encode($payload);
-        $signature = hash_hmac('sha256', $jsonPayload, $settings->webhook_secret);
+        $payloadJson = json_encode($fullPayload);
+        $signature = hash_hmac('sha256', $payloadJson, $secret);
 
         try {
-            $response = Http::withoutVerifying()
-                ->timeout(5)
+            // Fire the actual POST request to webhook.site or the merchant's server
+            $response = Http::timeout(10)
                 ->withHeaders([
-                    'x-gateway-signature' => $signature,
                     'Content-Type' => 'application/json',
+                    'Accept' => 'application/json',
+                    'x-gateway-signature' => $signature,
                 ])
-                ->post($settings->webhook_url, $payload);
-            
+                ->post($url, $fullPayload);
+
             $isSuccessful = $response->successful();
 
+            // Log the exact result to the database for the frontend to display
             WebhookDelivery::create([
                 'merchant_id' => $this->merchant->id,
                 'event' => $this->event,
-                'target_url' => $settings->webhook_url,
-                'payload' => $payload,
+                'target_url' => $url,
+                'payload' => $fullPayload,
                 'response_status' => $response->status(),
-                'response_body' => substr($response->body(), 0, 1000), 
+                'response_body' => substr($response->body(), 0, 1000), // Limit size to prevent DB bloat
                 'is_successful' => $isSuccessful,
             ]);
 
-            if (! $isSuccessful) {
-                throw new \Exception("Webhook failed with status: {$response->status()}");
+            // If the merchant server threw a 500 error, throw exception to trigger a retry
+            if (!$isSuccessful && $response->serverError()) {
+                throw new \Exception("Webhook target responded with {$response->status()}");
             }
-
         } catch (\Exception $e) {
-            if (!isset($isSuccessful)) {
-                WebhookDelivery::create([
-                    'merchant_id' => $this->merchant->id,
-                    'event' => $this->event,
-                    'target_url' => $settings->webhook_url,
-                    'payload' => $payload,
-                    'response_body' => $e->getMessage(),
-                    'is_successful' => false,
-                ]);
-            }
+            // Log connection failures (e.g., DNS error, timeout)
+            WebhookDelivery::create([
+                'merchant_id' => $this->merchant->id,
+                'event' => $this->event,
+                'target_url' => $url,
+                'payload' => $fullPayload,
+                'response_status' => null,
+                'response_body' => substr($e->getMessage(), 0, 1000),
+                'is_successful' => false,
+            ]);
 
-            throw $e;
+            Log::error('Webhook Delivery Failed', [
+                'merchant_id' => $this->merchant->id,
+                'url' => $url,
+                'error' => $e->getMessage()
+            ]);
+
+            throw $e; // Trigger job retry
         }
     }
 }

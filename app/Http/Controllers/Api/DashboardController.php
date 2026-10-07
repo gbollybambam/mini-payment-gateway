@@ -14,9 +14,9 @@ class DashboardController extends Controller
 {
     public function overview(Request $request): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        // THE FIX: Automatically resolves whether this is an Owner, a Team Member, or an API Key.
+        $merchant = $this->getMerchantContext($request);
 
-        // Dynamically use the merchant's registered currency (fallback to NGN if missing)
         $merchantCurrency = $merchant->currency ?? 'NGN';
 
         $wallet = Wallet::firstOrCreate(
@@ -24,31 +24,35 @@ class DashboardController extends Controller
             ['available_balance' => 0, 'pending_balance' => 0]
         );
 
-        // Dynamically sum all currently pending transactions to get the true pending clearance amount
-        $truePendingSum = Transaction::where('merchant_id', $merchant->id)
-            ->where('status', 'PENDING')
-            ->sum('amount');
+        $txStats = Transaction::where('merchant_id', $merchant->id)
+            ->selectRaw("
+                COUNT(id) as total_count,
+                COALESCE(SUM(CASE WHEN status = 'PENDING' THEN amount ELSE 0 END), 0) as pending_sum,
+                COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN net_amount ELSE 0 END), 0) as success_sum
+            ")->first();
+
+        $wdStats = Withdrawal::where('merchant_id', $merchant->id)
+            ->selectRaw("
+                COUNT(id) as total_count,
+                COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN amount ELSE 0 END), 0) as success_sum
+            ")->first();
 
         $overview = [
             'currency' => $merchantCurrency,
             'balances' => [
                 'available_balance' => $wallet ? (float) $wallet->available_balance : 0,
-                'pending_balance' => (float) $truePendingSum,
+                'pending_balance' => (float) ($txStats->pending_sum ?? 0),
             ],
             'metrics' => [
-                'total_payment_volume' => Transaction::where('merchant_id', $merchant->id)
-                    ->where('status', 'SUCCESS')
-                    ->sum('net_amount'),
-                'transaction_count' => Transaction::where('merchant_id', $merchant->id)->count(),
-                'total_withdrawals_volume' => Withdrawal::where('merchant_id', $merchant->id)
-                    ->where('status', 'SUCCESS')
-                    ->sum('amount'),
-                'withdrawal_count' => Withdrawal::where('merchant_id', $merchant->id)->count(),
+                'total_payment_volume' => (float) ($txStats->success_sum ?? 0),
+                'transaction_count' => (int) ($txStats->total_count ?? 0),
+                'total_withdrawals_volume' => (float) ($wdStats->success_sum ?? 0),
+                'withdrawal_count' => (int) ($wdStats->total_count ?? 0),
             ],
             'recent_activity' => Transaction::where('merchant_id', $merchant->id)
                 ->latest()
                 ->take(5)
-                ->get(['id', 'reference', 'amount', 'currency', 'status', 'created_at']),
+                ->get(['id', 'reference', 'amount', 'currency', 'status', 'created_at', 'payment_method', 'provider']),
         ];
 
         return response()->json([

@@ -17,7 +17,13 @@ class PaymentLinkController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $links = $request->user()->paymentLinks()->latest()->paginate(15);
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
+
+        $links = PaymentLink::where('merchant_id', $merchant->id)
+            ->with('payment:id,customer_email,amount,created_at')
+            ->latest()
+            ->paginate(15);
 
         return response()->json([
             'status' => 'success',
@@ -33,16 +39,20 @@ class PaymentLinkController extends Controller
 
     public function store(StorePaymentLinkRequest $request): JsonResponse
     {
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
+
         $validated = $request->validated();
 
-        // THE FIX: Map the frontend's customer_email into the backend's JSON array
         $customerInformation = null;
         if (!empty($validated['customer_email'])) {
             $customerInformation = ['email' => $validated['customer_email']];
         }
-        unset($validated['customer_email']); // Remove to prevent mass-assignment errors
 
-        $link = $request->user()->paymentLinks()->create(
+        // Prevent mass-assignment error on the JSON column mapping
+        unset($validated['customer_email']);
+
+        $link = $merchant->paymentLinks()->create(
             array_merge($validated, [
                 'customer_information' => $customerInformation,
                 'checkout_token' => Str::random(32),
@@ -59,7 +69,9 @@ class PaymentLinkController extends Controller
 
     public function show(Request $request, string $id): JsonResponse
     {
-        $link = $request->user()->paymentLinks()->findOrFail($id);
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
+        $link = $merchant->paymentLinks()->findOrFail($id);
 
         return response()->json([
             'status' => 'success',
@@ -69,7 +81,9 @@ class PaymentLinkController extends Controller
 
     public function update(UpdatePaymentLinkRequest $request, string $id): JsonResponse
     {
-        $link = $request->user()->paymentLinks()->findOrFail($id);
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
+        $link = $merchant->paymentLinks()->findOrFail($id);
 
         $link->update($request->validated());
 

@@ -2,56 +2,68 @@
 
 namespace App\Http\Controllers\Api\Auth;
 
-use App\Http\Controllers\Controller;
+use App\Http\Controllers\Controller; // <-- FIX: This was missing
 use App\Models\Merchant;
-use Illuminate\Auth\Events\Verified;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Auth\Events\Verified;
 
 class VerificationController extends Controller
 {
-    /**
-     * Resend verification email.
-     */
-    public function resend(Request $request): JsonResponse
+    public function verifyOtp(Request $request): JsonResponse
     {
-        if ($request->user()->hasVerifiedEmail()) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Email address is already verified.',
-            ], Response::HTTP_BAD_REQUEST);
+        $request->validate([
+            'merchant_id' => 'required|uuid',
+            'code' => 'required|digits:6',
+        ]);
+
+        $merchant = Merchant::findOrFail($request->merchant_id);
+
+        if ($merchant->hasVerifiedEmail()) {
+            return response()->json(['message' => 'Email already verified. Proceed to login.'], 200);
         }
 
-        $request->user()->sendEmailVerificationNotification();
+        $cachedOtp = Cache::get('otp_verify_' . $merchant->id);
+
+        if (! $cachedOtp) {
+            return response()->json(['message' => 'Verification code expired. Please request a new one.'], 400);
+        }
+
+        if (! hash_equals($cachedOtp, $request->code)) {
+            return response()->json(['message' => 'Invalid verification code.'], 400);
+        }
+
+        $merchant->markEmailAsVerified();
+        Cache::forget('otp_verify_' . $merchant->id);
+
+        event(new Verified($merchant));
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Veification link sent to your email.',
-        ], Response::HTTP_OK);
+            'message' => 'Email verified successfully. You may now log in.'
+        ], 200);
     }
 
-    /**
-     * Mark the merchant's email as verified.
-     */
-    public function verify(Request $request, string $id, string $hash): JsonResponse
+    public function resendOtp(Request $request): JsonResponse
     {
-        $merchant = Merchant::findOrFail($id);
+        $request->validate(['merchant_id' => 'required|uuid']);
 
-        if (! hash_equals((string) $hash, sha1($merchant->getEmailForVerification()))) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'Invalid or expired verification URL.',
-            ], Response::HTTP_FORBIDDEN);
+        $merchant = Merchant::find($request->merchant_id);
+
+        if (! $merchant || $merchant->hasVerifiedEmail()) {
+            return response()->json(['message' => 'Invalid request or email already verified.'], 400);
         }
 
-        if ($merchant->markEmailAsVerified()) {
-            event(new Verified($merchant));
-        }
+        // Generate new code and cache for exactly 5 minutes
+        $otp = (string) random_int(100000, 999999);
+        Cache::put('otp_verify_' . $merchant->id, $otp, now()->addMinutes(5));
+
+        $merchant->notify(new \App\Notifications\Auth\SendOtpNotification($otp));
 
         return response()->json([
             'status' => 'success',
-            'message' => 'Email has been successfully verified.',
-        ], Response::HTTP_OK);
+            'message' => 'A new code has been sent.'
+        ], 200);
     }
 }

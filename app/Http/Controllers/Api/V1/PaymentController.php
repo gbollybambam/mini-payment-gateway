@@ -2,34 +2,39 @@
 
 namespace App\Http\Controllers\Api\V1;
 
-use App\Services\PaymentProviders\Contracts\PaymentProviderInterface; 
+use App\Services\PaymentProviders\ProviderFactory;
+use App\Services\Ledger\LedgerService;
 use Illuminate\Support\Facades\DB;
+use App\Enums\PaymentStatus;
+use App\Http\Controllers\Controller;
+use App\Models\Transaction;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 use App\Http\Resources\Payment\TransactionResource;
 use App\Http\Requests\Payment\GetTransactionsRequest;
 use Illuminate\Database\Eloquent\Builder;
-use App\Enums\PaymentStatus;
-use App\Http\Controllers\Controller;
 use App\Http\Requests\Payment\InitializePaymentRequest;
-use App\Models\Transaction;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
 use App\Models\Wallet;
 use App\Models\PaymentLink;
 use App\Enums\PaymentLinkStatus;
 
 class PaymentController extends Controller
 {
-    public function __construct(
-        private PaymentProviderInterface $paymentProvider,
-        private \App\Services\Ledger\LedgerService $ledgerService
-    ) {}
+    protected ProviderFactory $providerFactory;
+    protected LedgerService $ledgerService;
+
+    public function __construct(ProviderFactory $providerFactory, LedgerService $ledgerService)
+    {
+        $this->providerFactory = $providerFactory;
+        $this->ledgerService = $ledgerService;
+    }
 
     public function index(GetTransactionsRequest $request): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
 
-        // Use $request->input() to ensure we capture these even if your FormRequest hasn't been updated yet
         $search = $request->input('search');
         $status = $request->input('status');
         $startDate = $request->input('start_date');
@@ -39,7 +44,6 @@ class PaymentController extends Controller
 
         $query = Transaction::where('merchant_id', $merchant->id);
 
-        // 1. Advanced Search
         if (!empty($search)) {
             $query->where(function (Builder $q) use ($search) {
                 $q->where('reference', 'ilike', "%{$search}%")
@@ -54,12 +58,10 @@ class PaymentController extends Controller
             });
         }
 
-        // 2. Status Filter
         if (!empty($status)) {
             $query->where('status', $status);
         }
 
-        // 3. Date Range Filters
         if (!empty($startDate)) {
             $query->whereDate('created_at', '>=', $startDate);
         }
@@ -67,14 +69,12 @@ class PaymentController extends Controller
             $query->whereDate('created_at', '<=', $endDate);
         }
 
-        // 4. Dynamic Sorting (Safeguarded against SQL injection)
         $allowedSorts = ['created_at', 'amount'];
         $sortBy = in_array($sortBy, $allowedSorts) ? $sortBy : 'created_at';
         $sortDir = strtolower($sortDir) === 'asc' ? 'asc' : 'desc';
 
         $query->orderBy($sortBy, $sortDir);
 
-        // 5. Pagination
         $perPage = $request->input('per_page', 15);
         $transactions = $query->paginate($perPage);
 
@@ -92,9 +92,9 @@ class PaymentController extends Controller
 
     public function initialize(InitializePaymentRequest $request): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
         $idempotencyKey = $request->header('Idempotency-Key');
-
 
         if ($idempotencyKey) {
             $existingTransaction = Transaction::where('merchant_id', $merchant->id)
@@ -117,9 +117,12 @@ class PaymentController extends Controller
             }
         }
 
+        $providerName = $this->providerFactory->getActiveProviderName();
+        $provider = $this->providerFactory->make($providerName);
+
         $transaction = Transaction::create([
             'merchant_id' => $merchant->id,
-            'provider' => 'cray',
+            'provider' => $providerName,
             'customer_email' => $request->validated('customer_email'),
             'reference' => $request->validated('reference'),
             'amount' => $request->validated('amount'),
@@ -132,7 +135,7 @@ class PaymentController extends Controller
             'idempotency_key' => $idempotencyKey,
         ]);
 
-        $providerResponse = $this->paymentProvider->initializePayment($transaction);
+        $providerResponse = $provider->initializePayment($transaction);
 
         if (! $providerResponse['success']) {
             $transaction->update(['status' => PaymentStatus::FAILED]);
@@ -156,14 +159,13 @@ class PaymentController extends Controller
 
     public function verify(Request $request, string $id): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
 
-        // 1. Fetch transaction scoped to authenticated merchant
         $transaction = Transaction::where('merchant_id', $merchant->id)
             ->where('id', $id)
             ->firstOrFail();
 
-        // 2. Return early if transaction is already in a terminal state
         if ($transaction->status !== PaymentStatus::PENDING) {
             return response()->json([
                 'status' => 'success',
@@ -179,9 +181,10 @@ class PaymentController extends Controller
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        // 3. Query the active provider gateway
+        $provider = $this->providerFactory->make($transaction->provider);
+
         try {
-            $verificationResult = $this->paymentProvider->verifyPayment($transaction->provider_reference);
+            $verificationResult = $provider->verifyPayment($transaction->provider_reference);
         } catch (\Exception $e) {
             return response()->json([
                 'status' => 'error',
@@ -189,13 +192,11 @@ class PaymentController extends Controller
             ], Response::HTTP_BAD_GATEWAY);
         }
 
-        // 4. Atomic database transaction with row-level locking
-        return DB::transaction(function () use ($transaction, $verificationResult) {
+        return DB::transaction(function () use ($transaction, $verificationResult, $merchant) {
             $lockedTransaction = Transaction::where('id', $transaction->id)
                 ->lockForUpdate()
                 ->first();
 
-            // Guard against race conditions (e.g., webhook arrived during provider API call)
             if ($lockedTransaction->status !== PaymentStatus::PENDING) {
                 return response()->json([
                     'status' => 'success',
@@ -214,7 +215,6 @@ class PaymentController extends Controller
                     'net_amount' => $netAmount,
                 ]);
 
-                // Credit merchant wallet through ledger
                 $wallet = Wallet::firstOrCreate(
                     ['merchant_id' => $lockedTransaction->merchant_id, 'currency' => $lockedTransaction->currency],
                     ['available_balance' => 0, 'pending_balance' => 0]
@@ -229,7 +229,6 @@ class PaymentController extends Controller
                     description: "Manual verification credit for {$lockedTransaction->reference}"
                 );
 
-                // Update payment link if one was used
                 if (isset($lockedTransaction->metadata['payment_link_id'])) {
                     PaymentLink::where('id', $lockedTransaction->metadata['payment_link_id'])
                         ->update([
@@ -244,7 +243,6 @@ class PaymentController extends Controller
                     $lockedTransaction->toArray()
                 );
             } else {
-                // Keep as PENDING if user hasn't paid yet, or mark FAILED if gateway explicitly failed it
                 if ($verificationResult['status'] === PaymentStatus::FAILED->value) {
                     $lockedTransaction->update(['status' => PaymentStatus::FAILED]);
                 }
@@ -260,7 +258,8 @@ class PaymentController extends Controller
 
     public function show(Request $request, string $id): JsonResponse
     {
-        $merchant = $request->user() ?? $request->merchant;
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
 
         $transaction = Transaction::where('merchant_id', $merchant->id)
             ->where('id', $id)

@@ -13,17 +13,17 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        // Updated for Laravel 11 modern syntax (fixes deprecation warning)
         $middleware->preventRequestForgery(except: [
             'api/webhooks/*',
         ]);
 
-        $middleware->alias([
-            'auth.api_key' => \App\Http\Middleware\VerifyApiKey::class,
-            'merchant.active' => \App\Http\Middleware\EnsureMerchantIsActive::class,
-        ]);
+    $middleware->alias([
+        'auth.api_key' => \App\Http\Middleware\VerifyApiKey::class,
+        'merchant.active' => \App\Http\Middleware\EnsureMerchantIsActive::class,
+        'role' => \App\Http\Middleware\CheckRole::class,
+        'scope' => \App\Http\Middleware\CheckApiScope::class, // <-- ADD THIS LINE
+    ]);
 
-        // This enables Sanctum cookie sessions for your frontend
         $middleware->statefulApi();
     })
     ->withExceptions(function (Exceptions $exceptions): void {

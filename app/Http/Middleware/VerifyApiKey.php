@@ -19,7 +19,7 @@ class VerifyApiKey
         $token = $request->bearerToken();
 
         if (! $token) {
-            return response()->json([ 'status' => 'error', 'message' => 'API key missing.' ], Response::HTTP_UNAUTHORIZED);
+            return response()->json(['status' => 'error', 'message' => 'API key missing.'], Response::HTTP_UNAUTHORIZED);
         }
 
         // Hash the provided plaintext token to look it up securely
@@ -31,11 +31,19 @@ class VerifyApiKey
             return response()->json(['status' => 'error', 'message' => 'Invalid or revoked API key.'], Response::HTTP_UNAUTHORIZED);
         }
 
+        // --- NEW: STRICT EXPIRATION CHECK ---
+        if ($apiKey->expires_at !== null && $apiKey->expires_at->isPast()) {
+            return response()->json(['status' => 'error', 'message' => 'This API key has expired. Please generate a new one.'], Response::HTTP_UNAUTHORIZED);
+        }
+
         // Update last used timestamp
         $apiKey->update(['last_used_at' => now()]);
 
-        // Attach the merchant to the request for the controller to use
-        $request->merge(['merchant' => $apiKey->merchant]);
+        // Attach the merchant AND the scopes to the request for the scope checker to use
+        $request->merge([
+            'merchant' => $apiKey->merchant,
+            'api_scopes' => $apiKey->scopes ?? ['*']
+        ]);
 
         return $next($request);
     }

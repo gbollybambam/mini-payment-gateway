@@ -13,8 +13,10 @@ class WebhookDeliveryController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $deliveries = $request->user()
-            ->webhookDeliveries()
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
+
+        $deliveries = $merchant->webhookDeliveries()
             ->orderByDesc('created_at')
             ->paginate(15);
 
@@ -26,13 +28,14 @@ class WebhookDeliveryController extends Controller
 
     public function retry(Request $request, string $id): JsonResponse
     {
-        $delivery = $request->user()
-            ->webhookDeliveries()
-            ->findOrFail($id);
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
 
-        // Re-dispatch the webhook job
+        $delivery = $merchant->webhookDeliveries()->findOrFail($id);
+
+        // Re-dispatch the webhook job using the correct Parent Merchant
         DispatchMerchantWebhook::dispatch(
-            $request->user(),
+            $merchant,
             $delivery->event,
             $delivery->payload['data'] ?? []
         );

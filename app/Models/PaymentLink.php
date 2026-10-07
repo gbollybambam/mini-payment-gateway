@@ -48,4 +48,9 @@ class PaymentLink extends Model
     {
         return $this->belongsTo(Transaction::class, 'payment_id');
     }
+
+    public function payment(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(Transaction::class, 'payment_id');
+    }
 }

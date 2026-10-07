@@ -13,14 +13,19 @@ class WebhookSettingsController extends Controller
 {
     public function show(Request $request): JsonResponse
     {
-        $merchant = $request->user();
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
         $settings = $merchant->settings;
+
+        $maskedSecret = $settings?->webhook_secret
+            ? substr($settings->webhook_secret, 0, 10) . '**********************'
+            : null;
 
         return response()->json([
             'status' => 'success',
             'data' => [
                 'webhook_url' => $settings?->webhook_url,
-                'webhook_secret' => $settings?->webhook_secret,
+                'webhook_secret' => $maskedSecret,
             ],
         ], Response::HTTP_OK);
     }
@@ -32,7 +37,8 @@ class WebhookSettingsController extends Controller
             'webhook_secret' => ['nullable', 'string', 'min:16'],
         ]);
 
-        $merchant = $request->user();
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
 
         $settings = $merchant->settings()->firstOrCreate(
             ['merchant_id' => $merchant->id],
@@ -41,22 +47,26 @@ class WebhookSettingsController extends Controller
 
         $settings->update([
             'webhook_url' => $request->webhook_url,
-            'webhook_secret' => $request->webhook_secret ?? $settings->webhook_secret,
         ]);
+
+        $maskedSecret = $settings->webhook_secret
+            ? substr($settings->webhook_secret, 0, 10) . '**********************'
+            : null;
 
         return response()->json([
             'status' => 'success',
             'message' => 'Webhook settings updated successfully.',
             'data' => [
                 'webhook_url' => $settings->webhook_url,
-                'webhook_secret' => $settings->webhook_secret,
+                'webhook_secret' => $maskedSecret,
             ],
         ], Response::HTTP_OK);
     }
 
     public function test(Request $request): JsonResponse
     {
-        $merchant = $request->user();
+        // FIX: Use global context resolver
+        $merchant = $this->getMerchantContext($request);
         $settings = $merchant->settings;
 
         if (! $settings || ! $settings->webhook_url || ! $settings->webhook_secret) {
@@ -66,7 +76,6 @@ class WebhookSettingsController extends Controller
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        // Dispatch a test webhook event
         DispatchMerchantWebhook::dispatch(
             $merchant,
             'test.ping',

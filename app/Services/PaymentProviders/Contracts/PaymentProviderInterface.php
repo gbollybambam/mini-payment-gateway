@@ -2,7 +2,6 @@
 
 namespace App\Services\PaymentProviders\Contracts;
 
-use App\Models\Merchant;
 use App\Models\Transaction;
 
 interface PaymentProviderInterface
@@ -37,12 +36,17 @@ interface PaymentProviderInterface
      */
     public function initializePayout(\App\Models\Withdrawal $withdrawal): array;
 
+    public function resolveAccount(string $accountNumber, string $bankCode): array;
+
+    /**
+     * Retrieve a list of supported banks for a specific currency.
+     */
+    public function getBanks(string $currency): array;
+
     /**
      * Verify the status of a payout.
      */
     public function verifyPayout(string $providerReference): array;
 
     public function healthCheck(): bool;
-
-    public function createMerchantSubaccount(Merchant $merchant): string;
 }

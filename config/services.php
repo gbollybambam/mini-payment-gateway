@@ -36,11 +36,8 @@ return [
     ],
 
     'cray' => [
-        'environment' => env('CRAY_ENVIRONMENT', 'live'),
         'public_key' => env('CRAY_PUBLIC_KEY'),
         'secret_key' => env('CRAY_SECRET_KEY'),
-        'base_url' => env('CRAY_BASE_URL', 'https://pay.connectramp.com'),
-        'default_subaccount_token' => env('CRAY_DEFAULT_SUBACCOUNT_TOKEN'),
     ],
 
     'paystack' => [

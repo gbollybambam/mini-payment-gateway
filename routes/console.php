@@ -1,8 +1,11 @@
 <?php
 
-use Illuminate\Foundation\Inspiring;
-use Illuminate\Support\Facades\Artisan;
+use App\Models\Merchant;
+use Illuminate\Support\Facades\Schedule;
 
-Artisan::command('inspire', function () {
-    $this->comment(Inspiring::quote());
-})->purpose('Display an inspiring quote');
+// Automatically destroy unverified accounts and their cascading wallets/settings after 48 hours
+Schedule::call(function () {
+    Merchant::whereNull('email_verified_at')
+        ->where('created_at', '<', now()->subHours(48))
+        ->delete();
+})->hourly();

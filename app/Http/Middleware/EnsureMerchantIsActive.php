@@ -10,13 +10,46 @@ class EnsureMerchantIsActive
 {
     public function handle(Request $request, Closure $next): Response
     {
-        // Get the merchant depending on whether they logged in via Dashboard (Sanctum) or API Key
-        $merchant = $request->user() ?? $request->merchant;
+        $user = $request->user();
+        $merchant = $request->merchant;
 
-        if ($merchant && $merchant->status === 'SUSPENDED') {
+        // 1. Check if the authenticated user is a Team Member (MerchantUser) and is deactivated
+        if ($user instanceof \App\Models\MerchantUser) {
+            if (!$user->is_active) {
+                if (method_exists($user, 'tokens')) {
+                    $user->tokens()->delete();
+                }
+
+                if ($request->hasSession()) {
+                    $request->session()->invalidate();
+                    $request->session()->regenerateToken();
+                }
+
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Your team account has been deactivated or suspended by the administrator.',
+                ], Response::HTTP_FORBIDDEN);
+            }
+
+            $merchant = $user->merchant;
+        }
+
+        // 2. Check if the Merchant (Owner or context) is suspended
+        if ($merchant && strtoupper($merchant->status ?? '') === 'SUSPENDED') {
+            if ($user) {
+                if (method_exists($user, 'tokens')) {
+                    $user->tokens()->delete();
+                }
+
+                if ($request->hasSession()) {
+                    $request->session()->invalidate();
+                    $request->session()->regenerateToken();
+                }
+            }
+
             return response()->json([
                 'status' => 'error',
-                'message' => 'Your account has been suspended. Please contact support.',
+                'message' => 'Your merchant account has been suspended. Please contact support.',
             ], Response::HTTP_FORBIDDEN);
         }
 

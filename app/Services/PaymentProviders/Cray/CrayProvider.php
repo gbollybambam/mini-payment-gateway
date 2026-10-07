@@ -5,7 +5,6 @@ namespace App\Services\PaymentProviders\Cray;
 use App\Enums\PaymentStatus;
 use App\Models\Transaction;
 use App\Models\Withdrawal;
-use App\Models\Merchant;
 use App\Models\Provider;
 use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
 use Illuminate\Support\Facades\Http;
@@ -196,10 +195,5 @@ class CrayProvider implements PaymentProviderInterface
         } catch (\Exception $e) {
             return false;
         }
-    }
-
-    public function createMerchantSubaccount(Merchant $merchant): string
-    {
-        return $this->defaultSubaccountToken;
     }
 }
