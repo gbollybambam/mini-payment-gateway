@@ -27,6 +27,7 @@ class Transaction extends Model
         'metadata',
         'checkout_url',
         'idempotency_key',
+        'idempotency_fingerprint',
     ];
 
     protected function casts(): array

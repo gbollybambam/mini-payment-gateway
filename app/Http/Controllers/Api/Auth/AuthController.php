@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Auth;
 
 use App\Models\Merchant;
+use App\Models\MerchantUser;
 use App\Models\KnownDevice;
 use App\Models\LoginAudit;
 use App\Models\Wallet;
@@ -26,34 +27,46 @@ class AuthController extends Controller
     public function register(RegisterMerchantRequest $request): JsonResponse
     {
         $idempotencyKey = $request->header('Idempotency-Key');
+        $validated = $request->validated();
+        $payloadFingerprint = hash('sha256', json_encode($validated, JSON_THROW_ON_ERROR));
 
         if ($idempotencyKey) {
             $cacheKey = 'idemp_reg_' . hash('sha256', $idempotencyKey);
-            if (Cache::has($cacheKey)) {
-                return Cache::get($cacheKey);
+            $cached = Cache::get($cacheKey);
+            if ($cached) {
+                if (is_array($cached) && ($cached['fingerprint'] ?? null) !== $payloadFingerprint) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'This idempotency key was already used for different registration data.',
+                    ], Response::HTTP_CONFLICT);
+                }
+
+                return is_array($cached) ? $cached['response'] : $cached;
             }
         }
 
         // Use a transaction to ensure atomic provisioning of Merchant, Settings, and Wallet
-        $merchant = DB::transaction(function () use ($request) {
+        $merchant = DB::transaction(function () use ($validated) {
             // 1. Check for an existing UNVERIFIED account (the typo trap fix)
-            $merchant = Merchant::where('email', $request->email)
+            $merchant = Merchant::where('email', $validated['email'])
                 ->whereNull('email_verified_at')
                 ->first();
 
             if ($merchant) {
                 // FIX: Prevent overwriting an account that is actively trying to verify right now
                 if ($merchant->created_at->addMinutes(15)->isFuture()) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'A registration is currently in progress for this email. Please check your inbox or wait 15 minutes to try again.'
-                    ], Response::HTTP_CONFLICT);
+                    return null;
                 }
                 // Safely overwrite the abandoned/typo record
-                $merchant->update($request->validated());
+                $merchant->update($validated);
+
+                Wallet::updateOrCreate(
+                    ['merchant_id' => $merchant->id],
+                    ['currency' => $merchant->currency]
+                );
             } else {
                 // Completely new registration
-                $merchant = Merchant::create($request->validated());
+                $merchant = Merchant::create($validated);
 
                 $merchant->settings()->create([
                     'brand_name' => $merchant->business_name,
@@ -71,10 +84,17 @@ class AuthController extends Controller
             return $merchant;
         });
 
+        if (! $merchant) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'A registration is currently in progress for this email. Please check your inbox or wait 15 minutes to try again.',
+            ], Response::HTTP_CONFLICT);
+        }
+
         // 2. Generate a secure 6-digit OTP
         $otp = (string) random_int(100000, 999999);
 
-        // 3. Cache the OTP for 15 minutes, tied directly to this merchant ID
+        // 3. Cache the OTP for 5 minutes, tied directly to this merchant ID
         Cache::put('otp_verify_' . $merchant->id, $otp, now()->addMinutes(5));
 
         // 4. Dispatch the email
@@ -89,7 +109,10 @@ class AuthController extends Controller
         ], Response::HTTP_CREATED);
 
         if ($idempotencyKey) {
-            Cache::put($cacheKey ?? '', $response, now()->addHours(24));
+            Cache::put($cacheKey, [
+                'fingerprint' => $payloadFingerprint,
+                'response' => $response,
+            ], now()->addHours(24));
         }
 
         return $response;
@@ -105,13 +128,14 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
+        $email = strtolower(trim($request->input('email')));
         $ip = $request->ip();
         $userAgent = $request->userAgent() ?? 'Unknown Device';
 
         // -------------------------------------------------------------
         // PATH A: Try authenticating as a Primary Merchant Owner
         // -------------------------------------------------------------
-        $merchant = Merchant::where('email', $request->email)->first();
+        $merchant = Merchant::where('email', $email)->first();
 
         if ($merchant) {
             // Password Check
@@ -121,7 +145,8 @@ class AuthController extends Controller
             }
 
             // Suspension Intercept
-            if (isset($merchant->is_active) && ! $merchant->is_active) {
+            if ((isset($merchant->is_active) && ! $merchant->is_active)
+                || strtoupper($merchant->status ?? '') === 'SUSPENDED') {
                 LoginAudit::create(['merchant_id' => $merchant->id, 'ip_address' => $ip, 'user_agent' => $userAgent, 'status' => 'suspended']);
                 return response()->json([
                     'code' => 'account_suspended',
@@ -145,19 +170,23 @@ class AuthController extends Controller
             // Risk-Based Authentication (RBA) Engine
             $deviceSignature = hash('sha256', $ip . $userAgent);
             $knownDevice = KnownDevice::where('merchant_id', $merchant->id)
+                ->whereNull('merchant_user_id')
                 ->where('device_signature', $deviceSignature)
                 ->first();
 
             if (! $knownDevice) {
                 LoginAudit::create(['merchant_id' => $merchant->id, 'ip_address' => $ip, 'user_agent' => $userAgent, 'status' => 'challenged']);
-                $otp = (string) random_int(100000, 999999);
-                Cache::put('device_verify_' . $merchant->id, $otp, now()->addMinutes(10));
-                $merchant->notify(new \App\Notifications\Auth\DeviceVerificationNotification($otp, $ip, $userAgent));
+                $challenge = $this->createDeviceChallenge($merchant, null, $ip, $userAgent);
+                $merchant->notify(new \App\Notifications\Auth\DeviceVerificationNotification(
+                    Cache::get('device_verify_' . $challenge)['otp'],
+                    $ip,
+                    $userAgent
+                ));
 
                 return response()->json([
                     'code' => 'device_unknown',
                     'message' => 'New device detected. Please enter the verification code sent to your email.',
-                    'data' => ['merchant_id' => $merchant->id]
+                    'data' => ['challenge' => $challenge]
                 ], 202);
             }
 
@@ -176,18 +205,47 @@ class AuthController extends Controller
         // -------------------------------------------------------------
         // PATH B: Try authenticating as a Team Member (MerchantUser)
         // -------------------------------------------------------------
-        $teamUser = \App\Models\MerchantUser::where('email', $request->email)->first();
+        $teamUsers = MerchantUser::where('email', $email)->with('merchant')->get();
+        $teamUser = $teamUsers->filter(
+            fn (MerchantUser $candidate): bool => Hash::check($request->password, $candidate->password)
+        )->values();
 
-        if ($teamUser) {
-            if (! Hash::check($request->password, $teamUser->password)) {
-                return response()->json(['message' => 'Invalid credentials.'], 401);
-            }
+        if ($teamUser->count() === 1) {
+            $teamUser = $teamUser->first();
 
-            if (! $teamUser->is_active) {
+            if (! $teamUser->is_active || ! $teamUser->merchant->is_active
+                || strtoupper($teamUser->merchant->status ?? '') === 'SUSPENDED') {
                 return response()->json(['code' => 'account_suspended', 'message' => 'Your team account has been deactivated.'], 403);
             }
 
-            // CRITICAL FIX: Log them into the 'team' guard!
+            $deviceSignature = hash('sha256', $ip . $userAgent);
+            $knownDevice = KnownDevice::where('merchant_id', $teamUser->merchant_id)
+                ->where('merchant_user_id', $teamUser->id)
+                ->where('device_signature', $deviceSignature)
+                ->first();
+
+            if (! $knownDevice) {
+                LoginAudit::create([
+                    'merchant_id' => $teamUser->merchant_id,
+                    'ip_address' => $ip,
+                    'user_agent' => $userAgent,
+                    'status' => 'challenged',
+                ]);
+                $challenge = $this->createDeviceChallenge($teamUser->merchant, $teamUser, $ip, $userAgent);
+                $teamUser->notify(new \App\Notifications\Auth\DeviceVerificationNotification(
+                    Cache::get('device_verify_' . $challenge)['otp'],
+                    $ip,
+                    $userAgent
+                ));
+
+                return response()->json([
+                    'code' => 'device_unknown',
+                    'message' => 'New device detected. Please enter the verification code sent to your email.',
+                    'data' => ['challenge' => $challenge],
+                ], 202);
+            }
+
+            $knownDevice->update(['last_login_at' => now()]);
             Auth::guard('team')->login($teamUser);
             $request->session()->regenerate();
 
@@ -199,6 +257,8 @@ class AuthController extends Controller
 
     public function logout(Request $request): JsonResponse
     {
+        $request->user()?->currentAccessToken()?->delete();
+
         // Logout from both guards to be safe
         Auth::guard('web')->logout();
         Auth::guard('team')->logout();
@@ -246,5 +306,25 @@ class AuthController extends Controller
                 'business_name' => $user->business_name,
             ]
         ], Response::HTTP_OK);
+    }
+
+    private function createDeviceChallenge(
+        Merchant $merchant,
+        ?MerchantUser $teamUser,
+        string $ip,
+        string $userAgent
+    ): string {
+        $challenge = Str::random(64);
+        $otp = (string) random_int(100000, 999999);
+
+        Cache::put('device_verify_' . $challenge, [
+            'otp' => $otp,
+            'merchant_id' => $merchant->id,
+            'merchant_user_id' => $teamUser?->id,
+            'ip_address' => $ip,
+            'user_agent' => $userAgent,
+        ], now()->addMinutes(10));
+
+        return $challenge;
     }
 }

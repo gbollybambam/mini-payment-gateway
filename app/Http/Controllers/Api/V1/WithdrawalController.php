@@ -11,6 +11,7 @@ use App\Http\Resources\WithdrawalResource;
 use App\Models\Withdrawal;
 use App\Services\Ledger\LedgerService;
 use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
+use App\Services\PaymentProviders\ProviderFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -19,7 +20,7 @@ use Symfony\Component\HttpFoundation\Response;
 class WithdrawalController extends Controller
 {
     public function __construct(
-        private PaymentProviderInterface $paymentProvider,
+        private ProviderFactory $providerFactory,
         private LedgerService $ledgerService
     ) {}
 
@@ -91,6 +92,7 @@ class WithdrawalController extends Controller
 
                 return Withdrawal::create([
                     'merchant_id' => $merchant->id,
+                    'provider' => $this->providerFactory->getActiveProviderName(),
                     'reference' => $validated['reference'],
                     'amount' => $validated['amount'],
                     'currency' => $validated['currency'],
@@ -114,9 +116,15 @@ class WithdrawalController extends Controller
         }
 
         try {
-            $providerResponse = $this->paymentProvider->initializePayout($withdrawal);
+            $providerResponse = $this->providerFactory
+                ->make($withdrawal->provider)
+                ->initializePayout($withdrawal);
 
-            if (!$providerResponse['success']) {
+            if (!($providerResponse['success'] ?? false)
+                || empty($providerResponse['provider_reference'])
+                || !in_array(strtoupper((string) ($providerResponse['status'] ?? '')), ['PENDING', 'PROCESSING'], true)
+                || !is_numeric($providerResponse['fee'] ?? 0)
+                || (float) ($providerResponse['fee'] ?? 0) < 0) {
                 throw new \Exception('Provider rejected payout.');
             }
 
@@ -125,11 +133,11 @@ class WithdrawalController extends Controller
                 'provider_reference' => $providerResponse['provider_reference'],
                 'fee' => $providerResponse['fee'] ?? 0,
             ]);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
             DB::transaction(function () use ($withdrawal, $wallet, $e) {
                 $withdrawal->update([
                     'status' => WithdrawalStatus::FAILED,
-                    'failure_reason' => substr($e->getMessage(), 0, 255)
+                    'failure_reason' => 'Provider rejected payout'
                 ]);
 
                 $this->ledgerService->credit(
@@ -178,23 +186,37 @@ class WithdrawalController extends Controller
             ], Response::HTTP_OK);
         }
 
+        if (! $withdrawal->provider_reference) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Withdrawal has no provider reference.',
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
         try {
-            $verificationResult = $this->paymentProvider->verifyPayout($withdrawal->provider_reference ?? $withdrawal->reference);
-        } catch (\Exception $e) {
-            return response()->json(['status' => 'error', 'message' => 'Provider verification failed: ' . $e->getMessage()], Response::HTTP_BAD_GATEWAY);
+            $provider = $this->providerFactory->make($withdrawal->provider);
+            $verificationResult = $provider->verifyPayout($withdrawal->provider_reference);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Withdrawal provider verification failed.', [
+                'withdrawal_id' => $withdrawal->id,
+                'exception' => get_class($e),
+            ]);
+            return response()->json(['status' => 'error', 'message' => 'Provider verification failed.'], Response::HTTP_BAD_GATEWAY);
         }
 
         return DB::transaction(function () use ($withdrawal, $verificationResult, $merchant) {
             $locked = Withdrawal::where('id', $withdrawal->id)->lockForUpdate()->first();
 
-            if (in_array($locked->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED])) {
+            if (in_array($locked->status, [\App\Enums\WithdrawalStatus::SUCCESS, \App\Enums\WithdrawalStatus::FAILED, \App\Enums\WithdrawalStatus::CANCELLED])) {
                 return response()->json(['status' => 'success', 'data' => new WithdrawalResource($locked)]);
             }
 
-            if (str_contains(strtoupper($verificationResult['status']), 'SUCCESS')) {
+            $providerStatus = strtoupper((string) ($verificationResult['status'] ?? ''));
+
+            if ($providerStatus === 'SUCCESS' || $providerStatus === 'SUCCESSFUL') {
                 $locked->update(['status' => \App\Enums\WithdrawalStatus::SUCCESS]);
                 \App\Jobs\DispatchMerchantWebhook::dispatch($merchant, 'withdrawal.success', $locked->toArray());
-            } elseif (in_array(strtoupper($verificationResult['status']), ['FAILED', 'REVERSED', 'REJECTED'])) {
+            } elseif (in_array($providerStatus, ['FAILED', 'REVERSED', 'REJECTED'], true)) {
                 $locked->update([
                     'status' => \App\Enums\WithdrawalStatus::FAILED,
                     'failure_reason' => $verificationResult['reason'] ?? 'Bank rejected transfer'

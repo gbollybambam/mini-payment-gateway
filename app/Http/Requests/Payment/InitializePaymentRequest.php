@@ -23,7 +23,7 @@ class InitializePaymentRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'amount' => ['required', 'numeric', 'min:1'],
+            'amount' => ['required', 'numeric', 'min:1', 'regex:/^\d{1,15}(?:\.\d{1,2})?$/'],
             'currency' => [
                 'required',
                 'string',
@@ -44,7 +44,7 @@ class InitializePaymentRequest extends FormRequest
             ],
             'customer_email' => ['required', 'email'],
             'reference' => ['required', 'string', 'max:100'],
-            'callback_url' => ['nullable', 'url'],
+            'callback_url' => ['nullable', 'url:http,https'],
             'metadata' => ['nullable', 'array'],
         ];
     }

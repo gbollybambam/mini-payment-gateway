@@ -18,6 +18,7 @@ use Illuminate\Http\JsonResponse;
 use App\Models\Wallet;
 use App\Models\PaymentLink;
 use App\Enums\PaymentLinkStatus;
+use Illuminate\Support\Facades\Log;
 
 class PaymentController extends Controller
 {
@@ -95,6 +96,7 @@ class PaymentController extends Controller
         // FIX: Use global context resolver
         $merchant = $this->getMerchantContext($request);
         $idempotencyKey = $request->header('Idempotency-Key');
+        $payloadFingerprint = hash('sha256', json_encode($request->validated(), JSON_THROW_ON_ERROR));
 
         if ($idempotencyKey) {
             $existingTransaction = Transaction::where('merchant_id', $merchant->id)
@@ -102,6 +104,13 @@ class PaymentController extends Controller
                 ->first();
 
             if ($existingTransaction) {
+                if ($existingTransaction->idempotency_fingerprint !== $payloadFingerprint) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'This idempotency key was already used with different payment data.',
+                    ], Response::HTTP_CONFLICT);
+                }
+
                 if ($existingTransaction->status === PaymentStatus::FAILED) {
                     return response()->json([
                         'status' => 'error',
@@ -133,13 +142,34 @@ class PaymentController extends Controller
                 ['callback_url' => $request->validated('callback_url')]
             ),
             'idempotency_key' => $idempotencyKey,
+            'idempotency_fingerprint' => $payloadFingerprint,
         ]);
 
-        $providerResponse = $provider->initializePayment($transaction);
-
-        if (! $providerResponse['success']) {
+        try {
+            $providerResponse = $provider->initializePayment($transaction);
+        } catch (\Throwable $exception) {
+            Log::warning('Payment provider initialization failed.', [
+                'merchant_id' => $merchant->id,
+                'transaction_id' => $transaction->id,
+                'provider' => $providerName,
+                'exception' => get_class($exception),
+            ]);
             $transaction->update(['status' => PaymentStatus::FAILED]);
-            return response()->json(['status' => 'error', 'message' => 'Provider initialization failed.'], Response::HTTP_BAD_GATEWAY);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Payment provider initialization failed. Please try again.',
+            ], Response::HTTP_BAD_GATEWAY);
+        }
+
+        if (! ($providerResponse['success'] ?? false)
+            || empty($providerResponse['provider_reference'])
+            || empty($providerResponse['checkout_url'])) {
+            $transaction->update(['status' => PaymentStatus::FAILED]);
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Payment provider initialization failed. Please try again.',
+            ], Response::HTTP_BAD_GATEWAY);
         }
 
         $transaction->update([
@@ -185,10 +215,14 @@ class PaymentController extends Controller
 
         try {
             $verificationResult = $provider->verifyPayment($transaction->provider_reference);
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Payment verification failed.', [
+                'transaction_id' => $transaction->id,
+                'exception' => get_class($e),
+            ]);
             return response()->json([
                 'status' => 'error',
-                'message' => 'Unable to verify payment with provider: ' . $e->getMessage(),
+                'message' => 'Unable to verify payment with provider.',
             ], Response::HTTP_BAD_GATEWAY);
         }
 
@@ -207,7 +241,24 @@ class PaymentController extends Controller
 
             if ($verificationResult['success']) {
                 $fee = $verificationResult['fee'] ?? 0;
-                $netAmount = ($verificationResult['amount'] ?? $lockedTransaction->amount) - $fee;
+                $providerAmount = $verificationResult['amount'] ?? null;
+                $providerCurrency = $verificationResult['currency'] ?? null;
+                $providerReference = $verificationResult['provider_reference'] ?? null;
+
+                if ($providerAmount === null
+                    || number_format((float) $providerAmount, 4, '.', '') !== number_format((float) $lockedTransaction->amount, 4, '.', '')
+                    || ($providerCurrency !== null && strtoupper((string) $providerCurrency) !== strtoupper((string) $lockedTransaction->currency))
+                    || ($providerReference !== null && (string) $providerReference !== (string) $lockedTransaction->provider_reference)
+                    || ! is_numeric($fee)
+                    || (float) $fee < 0
+                    || (float) $fee > (float) $lockedTransaction->amount) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Provider payment details could not be verified.',
+                    ], Response::HTTP_UNPROCESSABLE_ENTITY);
+                }
+
+                $netAmount = (float) $providerAmount - (float) $fee;
 
                 $lockedTransaction->update([
                     'status' => PaymentStatus::SUCCESS,
@@ -231,6 +282,11 @@ class PaymentController extends Controller
 
                 if (isset($lockedTransaction->metadata['payment_link_id'])) {
                     PaymentLink::where('id', $lockedTransaction->metadata['payment_link_id'])
+                        ->where('merchant_id', $lockedTransaction->merchant_id)
+                        ->where(function ($query) use ($lockedTransaction) {
+                            $query->whereNull('payment_id')
+                                ->orWhere('payment_id', $lockedTransaction->id);
+                        })
                         ->update([
                             'status' => PaymentLinkStatus::COMPLETED,
                             'payment_id' => $lockedTransaction->id,

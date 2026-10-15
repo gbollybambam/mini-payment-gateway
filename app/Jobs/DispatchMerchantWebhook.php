@@ -13,6 +13,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Support\SafeWebhookUrl;
 
 class DispatchMerchantWebhook implements ShouldQueue
 {
@@ -44,12 +45,27 @@ class DispatchMerchantWebhook implements ShouldQueue
             'data' => $this->payload,
         ];
 
+        if (!SafeWebhookUrl::isSafe($url)) {
+            WebhookDelivery::create([
+                'merchant_id' => $this->merchant->id,
+                'event' => $this->event,
+                'target_url' => $url,
+                'payload' => $fullPayload,
+                'response_status' => null,
+                'response_body' => 'Webhook destination rejected by SSRF protection.',
+                'is_successful' => false,
+            ]);
+
+            return;
+        }
+
         $payloadJson = json_encode($fullPayload);
         $signature = hash_hmac('sha256', $payloadJson, $secret);
 
         try {
             // Fire the actual POST request to webhook.site or the merchant's server
             $response = Http::timeout(10)
+                ->withoutRedirecting()
                 ->withHeaders([
                     'Content-Type' => 'application/json',
                     'Accept' => 'application/json',
@@ -66,7 +82,7 @@ class DispatchMerchantWebhook implements ShouldQueue
                 'target_url' => $url,
                 'payload' => $fullPayload,
                 'response_status' => $response->status(),
-                'response_body' => substr($response->body(), 0, 1000), // Limit size to prevent DB bloat
+                'response_body' => null,
                 'is_successful' => $isSuccessful,
             ]);
 
@@ -82,14 +98,14 @@ class DispatchMerchantWebhook implements ShouldQueue
                 'target_url' => $url,
                 'payload' => $fullPayload,
                 'response_status' => null,
-                'response_body' => substr($e->getMessage(), 0, 1000),
+                'response_body' => 'Webhook delivery failed.',
                 'is_successful' => false,
             ]);
 
             Log::error('Webhook Delivery Failed', [
                 'merchant_id' => $this->merchant->id,
-                'url' => $url,
-                'error' => $e->getMessage()
+                'host' => parse_url($url, PHP_URL_HOST),
+                'error' => get_class($e)
             ]);
 
             throw $e; // Trigger job retry

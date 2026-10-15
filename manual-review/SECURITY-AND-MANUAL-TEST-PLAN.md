@@ -1,8 +1,8 @@
 # Payment Gateway Security Review and Manual Test Plan
 
-This document records the read-only review of the Laravel API and the frontend source at
+This document records the security review and implementation pass of the Laravel API and the frontend source at
 `C:\Users\HP\desktop\payment-gateway-frontend\src`. No application code was changed during
-the review.
+the initial review; the login/session fixes listed below were applied afterward.
 
 ## Review scope
 
@@ -21,6 +21,22 @@ the review.
 | 3 | HIGH | [MerchantSettingsController.php](../app/Http/Controllers/Api/Settings/MerchantSettingsController.php) and [api.php](../routes/api.php) | 22-46; 61-69 | The general settings endpoint exposes the complete webhook signing secret to every authenticated merchant user, including lower-privileged roles. | 9/10 |
 | 4 | HIGH | [WebhookSettingsController.php](../app/Http/Controllers/Api/WebhookSettingsController.php) and [DispatchMerchantWebhook.php](../app/Jobs/DispatchMerchantWebhook.php) | 34-50; 54-70 | An arbitrary merchant-controlled webhook URL is requested server-side and part of its response is stored and exposed, creating an SSRF and internal-response disclosure primitive. | 8/10 |
 | 5 | MEDIUM | [PaystackProvider.php](../app/Services/PaymentProviders/Paystack/PaystackProvider.php) | 148 | Full payout recipient data, including bank account details and name, is written to logs. | 9/10 |
+
+## Login/session implementation pass
+
+The following authentication issues were fixed in the current pass:
+
+- Device OTP challenges are now opaque, one-time values bound to the login IP and user-agent
+  instead of accepting a user-controlled merchant ID.
+- Owner and team-member logins use separate known-device records, and device verification
+  rejects suspended merchants and deactivated team members.
+- Logout revokes the current Sanctum bearer token, and session-management routes no longer
+  dereference a missing token. The `revoke-others` route is now registered.
+- Merchant status and active-state checks run before login and on protected requests.
+
+Runtime validation is still required for the cases in section 3 using two isolated browser
+profiles and separate accounts. The current environment cannot run the existing SQLite
+feature tests because the PHP SQLite driver is unavailable.
 
 ## Recommended fixes
 
@@ -128,6 +144,18 @@ secrets into the test record.
 - Force a 401 during an in-flight frontend request. Confirm one clean redirect to login,
   no redirect loop, and no stale protected data rendered afterward.
 
+Implementation and automated coverage:
+
+- State-changing API requests with an `Origin` header are restricted to the configured
+  application and frontend origins. Webhook delivery routes remain exempt because they
+  authenticate with their own signature scheme.
+- The frontend Axios interceptor allows only one 401 redirect at a time and rejects the
+  original request instead of leaving it pending indefinitely.
+- Automated coverage is in
+  [CsrfAndBrowserAuthenticationTest.php](../tests/Feature/Auth/CsrfAndBrowserAuthenticationTest.php).
+  It covers missing CSRF tokens, authenticated POST/PATCH/DELETE requests from an
+  untrusted origin, and login CSRF.
+
 ### 5. Role and tenant isolation
 
 For every role, exercise every route in [routes/api.php](../routes/api.php) and record the
@@ -144,6 +172,19 @@ expected status code. Confirm:
   state.
 - Non-merchant principals cannot accidentally pass merchant-only authentication middleware.
 
+Implementation and automated coverage:
+
+- Merchant UI controllers now ignore a client-supplied `merchant` field when a browser
+  principal is authenticated. Team members always resolve through their own merchant
+  relationship; only API-key middleware may provide request merchant context.
+- Merchant-only middleware rejects non-merchant principals, including admin users, before
+  controller execution.
+- Role checks allow owners, enforce the declared team roles, and reject undeclared roles.
+- Automated coverage is in
+  [RoleTenantIsolationTest.php](../tests/Feature/Auth/RoleTenantIsolationTest.php).
+  It covers owner access, admin/developer/finance role boundaries, non-merchant rejection,
+  inactive merchants, and attempted cross-merchant context injection.
+
 ### 6. API keys and scopes
 
 - Create a key with each individual scope and verify only matching routes work.
@@ -153,6 +194,21 @@ expected status code. Confirm:
 - Try API-key access to Merchant B resource IDs.
 - Confirm only the creation response can show a plaintext key and that hashes are never
   returned.
+
+Implementation and automated coverage:
+
+- Live keys now use the `sk_live_` prefix and test keys use `sk_test_`.
+- API-key scopes are allowlisted server-side to the scopes implemented by the routes;
+  wildcard and unsupported scopes are rejected.
+- Revoked and expired keys are rejected by API-key middleware, and rotation replaces the
+  stored hash so the old secret stops working immediately.
+- API-key resources omit `plain_text_key` unless it was explicitly attached for the
+  creation or rotation response. Stored SHA-256 hashes are never serialized.
+- Merchant-owned API resources remain scoped through the API key's merchant context.
+- Automated coverage is in
+  [ApiKeySecurityTest.php](../tests/Feature/Auth/ApiKeySecurityTest.php). It covers
+  environment prefixes, plaintext exposure, scope enforcement, revocation, expiry,
+  rotation, and cross-merchant resource access.
 
 ### 7. Payment initialization
 
@@ -165,6 +221,19 @@ expected status code. Confirm:
 - Test callback URLs and metadata for unsafe reflection or redirects.
 - Confirm provider errors do not expose credentials, raw responses, stack traces, or SQL.
 
+Implementation and automated coverage:
+
+- Amounts must be positive, limited to two decimal places, and bounded to prevent
+  oversized values. Currency must have a configured merchant wallet.
+- Callback URLs are restricted to HTTP(S), and metadata is stored as data only; it cannot
+  override merchant ownership, amount, currency, provider, status, or ledger fields.
+- Idempotency keys are fingerprinted against the validated payload. Reusing a key with
+  different payment data returns a conflict instead of replaying or mutating a payment.
+- Provider exceptions and malformed provider responses transition the transaction to
+  `FAILED` and return a generic 502 response without provider response bodies or secrets.
+- Automated coverage is in
+  [PaymentInitializationSecurityTest.php](../tests/Feature/Auth/PaymentInitializationSecurityTest.php).
+
 ### 8. Payment verification and ledger integrity
 
 - Verify a successful payment and confirm exactly one wallet credit.
@@ -176,6 +245,24 @@ expected status code. Confirm:
 - Test missing, negative, and fee-greater-than-amount values.
 - Confirm a successful transaction cannot move back to failed.
 - Verify payment-link completion remains scoped to the correct merchant and transaction.
+
+Implementation and automated coverage:
+
+- Manual verification and payment webhooks lock the transaction before applying a final
+  state transition. A successful transaction is not processed again, and the unique
+  `ldg_<transaction-id>` ledger reference plus wallet row lock enforce one credit.
+- Successful provider results must include the expected amount. If present, currency and
+  provider reference must also match the local transaction. Fees must be numeric,
+  non-negative, and no greater than the payment amount.
+- Provider verification failures return a generic gateway error without exposing provider
+  exception text. Payment-link completion is additionally constrained by merchant ID and
+  the transaction currently being linked.
+- Regression coverage for mismatched provider data, replayed verification, exactly-once
+  ledger crediting, and cross-merchant payment-link protection is in
+  [PaymentInitializationSecurityTest.php](../tests/Feature/Auth/PaymentInitializationSecurityTest.php).
+- True multi-process concurrency should still be exercised in staging against the
+  production database engine; the automated test verifies the replay/state-machine path
+  and the database locks are the enforcement mechanism.
 
 ### 9. Webhook verification and replay
 
@@ -191,6 +278,25 @@ expected status code. Confirm:
 - Alter webhook amount, fee, currency, and reference; all mismatches must be rejected.
 - Replay failed withdrawal webhooks and confirm reversal occurs once.
 
+Implementation and automated coverage:
+
+- The webhook route now selects the verifier from its `{provider}` route value. Paystack
+  payloads cannot be verified by the Cray implementation, or vice versa.
+- Unsupported providers, unsigned or invalidly signed payloads, unknown event types, and
+  payloads without a provider reference are rejected before any transaction lookup or
+  state mutation.
+- Payment webhook amount, currency, fee, and reference checks are enforced before success
+  transitions. Withdrawal amount and currency mismatches are rejected as well.
+- Transaction and withdrawal rows are locked during processing. Final-state checks plus
+  unique ledger references make valid webhook replays no-ops; failed withdrawal replay
+  cannot create a second reversal.
+- Focused routing and malformed-payload coverage is in
+  [WebhookSecurityTest.php](../tests/Feature/Auth/WebhookSecurityTest.php). Payment
+  mismatch, replay, and exactly-once ledger coverage is in
+  [PaymentInitializationSecurityTest.php](../tests/Feature/Auth/PaymentInitializationSecurityTest.php).
+- Provider contract tests should still be run with real signed fixtures for both providers
+  in staging before production enablement.
+
 ### 10. Withdrawals and payouts
 
 - Test below-minimum, unsupported-currency, malformed-bank-code, invalid-account-number,
@@ -203,6 +309,34 @@ expected status code. Confirm:
   actual provider transfer.
 - Replay failed payout webhooks and confirm idempotent reversal.
 - Inspect logs and confirm no full account number or recipient payload is stored.
+
+Implementation and automated coverage:
+
+- Withdrawal amounts require the configured minimum and no more than two decimal places;
+  account numbers must contain digits only, and the merchant wallet is locked during the
+  debit. The debit and withdrawal creation are transactional.
+- The selected provider is stored on each withdrawal. Initialization requires a successful
+  provider response with a reference, a pending/processing status, and a non-negative fee.
+  Provider failure marks the withdrawal failed and credits the debit back using a unique
+  reversal reference.
+- Verification uses the withdrawal's provider and requires a provider reference. Provider
+  errors are logged by exception class and return a generic response. Only explicit
+  success, failed, reversed, or rejected statuses can change state.
+- Cray payouts and payout verification now fail closed because those operations are not
+  implemented; they cannot report a local payout as successful without a provider transfer.
+- Paystack payout logs contain only the currency and final four account digits; complete
+  bank payloads and provider response bodies are not logged.
+- Withdrawal webhook amount and currency must match the local withdrawal. Row locks,
+  terminal-state checks, and unique reversal references make failed-payout replay
+  idempotent.
+- Regression coverage is in
+  [WithdrawalSecurityTest.php](../tests/Feature/Auth/WithdrawalSecurityTest.php).
+
+PostgreSQL validation:
+
+- The complete feature security suite was run against the isolated `mini_gateway_test`
+  PostgreSQL database, including the withdrawal and ledger tests. It passed with 34 tests
+  and 129 assertions.
 
 ### 11. Hosted checkout and payment links
 
@@ -217,6 +351,31 @@ expected status code. Confirm:
 - Confirm the success page reflects server-verified status, not only a query-string reference.
 - Refresh, use browser back/forward, disconnect the network, and retry during checkout.
 
+Implementation and automated coverage:
+
+- Checkout processing re-checks the link inside a row-locked transaction. A completed,
+  deactivated, expired, or already-used link cannot create another transaction, including
+  when multiple tabs submit at the same time.
+- Amount, currency, merchant ownership, and payment-link identity are taken from the
+  server-side link record; customer input is limited to validated name and email fields.
+- Provider initialization failures mark the created checkout transaction failed and return a
+  generic error. Callback verification uses the transaction's recorded provider and
+  rejects successful responses with missing or mismatched amount, currency, or fee data.
+- Ledger-credit failures are no longer swallowed. The callback transaction rolls back and
+  redirects to the failure page instead of presenting a false successful checkout.
+- Configured redirect destinations must be HTTPS. Invalid or non-HTTPS destinations fall
+  back to the trusted frontend success/failure pages, preventing open redirects.
+- Callback references are constrained to the selected token's merchant and transaction
+  records. Unknown and foreign references cannot change another merchant's payment.
+- The frontend hosted-checkout page displays server-loaded checkout data and redirects only
+  to the checkout URL returned by the API; it does not trust browser-supplied amount or
+  currency values.
+
+PostgreSQL validation:
+
+- The complete feature security suite was run against the isolated `mini_gateway_test`
+  PostgreSQL database. It passed with 34 tests and 129 assertions.
+
 ### 12. SSRF and webhook delivery
 
 In an isolated environment, configure webhook destinations for:
@@ -229,6 +388,21 @@ In an isolated environment, configure webhook destinations for:
 Trigger a webhook and verify unsafe destinations are rejected, no internal response body is
 returned through delivery history, redirects are safe, and retries do not duplicate
 financial state changes.
+
+Implementation:
+
+- Webhook configuration and queued delivery require HTTPS and resolve every A/AAAA
+  address before delivery. Loopback, RFC1918, link-local, carrier-grade NAT, unique-local,
+  IPv6 loopback, IPv6 link-local, and IPv4-mapped private addresses are rejected.
+- The delivery client does not follow redirects, preventing a public URL from redirecting
+  the worker into an internal address. The destination is validated again in the job so
+  old or directly-created settings cannot bypass request validation.
+- Delivery history no longer stores response bodies or exception text. HTTP responses have
+  a null body and transport failures use a generic diagnostic. Logs record only the
+  destination host and exception class.
+- Unsafe destinations are recorded as rejected deliveries without making an outbound
+  request. Delivery retries only retry notification delivery and do not mutate payment,
+  withdrawal, or ledger state.
 
 ### 13. Frontend security and UX
 
@@ -246,6 +420,24 @@ financial state changes.
 - Test slow network, provider timeout, refresh during payment, and browser back/forward.
 - Confirm the UI never claims success before server verification and clearly distinguishes
   pending, failed, cancelled, and successful states.
+
+Implementation:
+
+- Browser authentication uses HttpOnly/SameSite cookies and does not persist session
+  identifiers, API keys, passwords, or webhook secrets in local storage. Registration
+  recovery storage contains only non-sensitive form fields and is removed when read.
+- Protected dashboard providers clear the authenticated user before redirecting after a
+  401 and render no protected children while unauthenticated, preventing stale protected
+  data during redirects. Redirects use replacement navigation to avoid back-button loops.
+- API configuration now uses `NEXT_PUBLIC_API_URL` instead of hard-coding the local API
+  host. The Axios interceptor keeps a single 401 redirect in flight.
+- Payment checkout disables its submit button while the provider session is being created;
+  API-key, withdrawal, provider, and other mutation screens use processing/loading guards.
+  User-controlled values are rendered as React text rather than HTML.
+- Existing frontend production build and TypeScript validation pass. ESLint still reports
+  pre-existing errors in unrelated dashboard files (explicit `any`, unescaped documentation
+  quotes, and state updates in effects); those should be cleaned up before treating lint
+  as a release gate.
 
 ## Exit criteria for the mentor demonstration
 

@@ -32,7 +32,7 @@ class ApiKeyController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'environment' => ['required', 'in:live,test'],
             'scopes' => ['required', 'array', 'min:1'],
-            'scopes.*' => ['string'], // You can restrict this later using an 'in:' rule
+            'scopes.*' => ['string', 'in:payments:read,payments:write,withdrawals:read,withdrawals:write,wallets:read,*'],
             'expiration_days' => ['nullable', 'integer', 'min:1', 'max:365'], // null = never expires
         ]);
 

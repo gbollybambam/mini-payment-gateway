@@ -74,6 +74,8 @@ class PaystackProvider implements PaymentProviderInterface
             'success' => $isSuccessful,
             'status' => $isSuccessful ? PaymentStatus::SUCCESS->value : PaymentStatus::FAILED->value,
             'amount' => $data['amount'] / 100,
+            'currency' => $data['currency'] ?? null,
+            'provider_reference' => $data['reference'] ?? $providerReference,
             'net_amount' => ($data['amount'] - ($data['fees'] ?? 0)) / 100,
             'fee' => ($data['fees'] ?? 0) / 100,
         ];
@@ -102,6 +104,8 @@ class PaystackProvider implements PaymentProviderInterface
             'event' => $normalizedEvent,
             'provider_reference' => $dataObject['reference'] ?? $dataObject['transfer_code'] ?? '',
             'amount' => ($dataObject['amount'] ?? 0) / 100,
+            'currency' => $dataObject['currency'] ?? null,
+            'currency' => $dataObject['currency'] ?? null,
             'fee' => ($dataObject['fees'] ?? 0) / 100,
             'reason' => $dataObject['gateway_response'] ?? $dataObject['failures'] ?? null,
         ];
@@ -145,13 +149,16 @@ class PaystackProvider implements PaymentProviderInterface
             'currency' => (string) ($withdrawal->currency ?? 'NGN'),
         ];
 
-        Log::info('Paystack Payout Recipient Payload:', $payload);
+        Log::info('Paystack payout recipient request prepared.', [
+            'currency' => $withdrawal->currency,
+            'account_suffix' => substr($payload['account_number'], -4),
+        ]);
 
         $recipientResponse = $this->client()->post("{$this->baseUrl}/transferrecipient", $payload);
 
         if (!$recipientResponse->successful() || !$recipientResponse->json('status')) {
-            Log::error('Paystack Recipient Creation Failed', ['response' => $recipientResponse->body()]);
-            throw new \Exception('Failed to create bank transfer recipient: ' . $recipientResponse->json('message'));
+            Log::error('Paystack recipient creation failed.', ['status_code' => $recipientResponse->status()]);
+            throw new \Exception('Failed to create bank transfer recipient.');
         }
 
         $recipientCode = $recipientResponse->json('data.recipient_code');
@@ -165,8 +172,8 @@ class PaystackProvider implements PaymentProviderInterface
         ]);
 
         if (!$transferResponse->successful() || !$transferResponse->json('status')) {
-            Log::error('Paystack Transfer Initiation Failed', ['response' => $transferResponse->body()]);
-            throw new \Exception('Payout provider rejected transfer: ' . $transferResponse->json('message'));
+            Log::error('Paystack transfer initiation failed.', ['status_code' => $transferResponse->status()]);
+            throw new \Exception('Payout provider rejected transfer.');
         }
 
         $transferData = $transferResponse->json('data');

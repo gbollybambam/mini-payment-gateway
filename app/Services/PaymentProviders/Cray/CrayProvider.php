@@ -99,12 +99,10 @@ class CrayProvider implements PaymentProviderInterface
         $response = $this->client()->post("{$this->baseUrl}/api/checkout/initialize", $payload);
 
         if (!$response->successful() || !($response->json('status') ?? false)) {
-            $rawBody = $response->body();
             Log::error('Cray Live Initialize Payment Failed', [
                 'status_code' => $response->status(),
-                'response_body' => $rawBody
             ]);
-            throw new \Exception('Cray Error (Status ' . $response->status() . '): ' . $rawBody);
+            throw new \RuntimeException('Payment provider rejected initialization.');
         }
 
         $data = $response->json('data');
@@ -131,6 +129,8 @@ class CrayProvider implements PaymentProviderInterface
             'success' => $isSuccessful,
             'status' => $isSuccessful ? PaymentStatus::SUCCESS->value : PaymentStatus::FAILED->value,
             'amount' => $data['amount'] ?? 0,
+            'currency' => $data['currency'] ?? null,
+            'provider_reference' => $data['reference'] ?? $providerReference,
             'net_amount' => $data['net_amount'] ?? 0,
             'fee' => $data['fee'] ?? 0,
         ];
@@ -162,6 +162,7 @@ class CrayProvider implements PaymentProviderInterface
             'event' => $normalizedEvent,
             'provider_reference' => $dataObject['reference'] ?? '',
             'amount' => $dataObject['amount'] ?? null,
+            'currency' => $dataObject['currency'] ?? null,
             'fee' => $dataObject['charge'] ?? $dataObject['fee'] ?? 0,
             'reason' => $dataObject['failure_reason'] ?? null,
         ];
@@ -180,12 +181,22 @@ class CrayProvider implements PaymentProviderInterface
 
     public function initializePayout(Withdrawal $withdrawal): array
     {
-        return ['success' => true, 'provider_reference' => $withdrawal->reference, 'status' => 'PROCESSING', 'fee' => 50.00];
+        throw new \RuntimeException('Cray payouts are not enabled.');
     }
 
     public function verifyPayout(string $providerReference): array
     {
-        return ['success' => true, 'status' => 'SUCCESSFUL', 'amount' => 0, 'fee' => 0];
+        throw new \RuntimeException('Cray payout verification is not enabled.');
+    }
+
+    public function resolveAccount(string $accountNumber, string $bankCode): array
+    {
+        throw new \RuntimeException('Cray account resolution is not supported.');
+    }
+
+    public function getBanks(string $currency): array
+    {
+        throw new \RuntimeException('Cray bank lookup is not supported.');
     }
 
     public function healthCheck(): bool

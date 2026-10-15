@@ -4,6 +4,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -25,9 +26,21 @@ return Application::configure(basePath: dirname(__DIR__))
     ]);
 
         $middleware->statefulApi();
+        $middleware->prepend(\App\Http\Middleware\RejectUntrustedOrigins::class);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
             fn(Request $request) => $request->is('api/*') || $request->expectsJson(),
         );
+
+        $exceptions->render(function (QueryException $exception, Request $request) {
+            if ($request->is('api/*') || $request->expectsJson()) {
+                report($exception);
+
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'The service is temporarily unavailable. Please try again.',
+                ], 503);
+            }
+        });
     })->create();

@@ -14,6 +14,14 @@ class RegisterMerchantRequest extends FormRequest
         return true; // Handled by API middleware routing
     }
 
+    protected function prepareForValidation(): void
+    {
+        $this->merge([
+            'business_name' => is_string($this->business_name) ? trim($this->business_name) : $this->business_name,
+            'email' => is_string($this->email) ? strtolower(trim($this->email)) : $this->email,
+        ]);
+    }
+
     public function rules(): array
     {
         return [
@@ -21,7 +29,7 @@ class RegisterMerchantRequest extends FormRequest
             'email' => [
                 'required',
                 'string',
-                'email:rfc,dns',
+                'email:rfc',
                 'max:255',
                 // FIX: Only throw "Email Taken" if the account is actually verified.
                 Rule::unique('merchants', 'email')->whereNotNull('email_verified_at'),

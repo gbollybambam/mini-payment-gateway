@@ -4,6 +4,7 @@ namespace App\Http\Requests\Settings;
 
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
+use App\Support\SafeWebhookUrl;
 
 class UpdateMerchantSettingsRequest extends FormRequest
 {
@@ -37,7 +38,17 @@ class UpdateMerchantSettingsRequest extends FormRequest
             'cancel_url' => ['sometimes', 'nullable', 'url', 'max:255'],
 
             // Developer settings
-            'webhook_url' => ['sometimes', 'nullable', 'url', 'max:255'],
+            'webhook_url' => [
+                'sometimes',
+                'nullable',
+                'url:https',
+                'max:255',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if ($value && !SafeWebhookUrl::isSafe($value)) {
+                        $fail('The webhook URL must use HTTPS and resolve only to a public address.');
+                    }
+                },
+            ],
         ];
     }
 }

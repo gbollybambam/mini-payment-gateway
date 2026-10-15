@@ -38,7 +38,6 @@ class CheckoutController extends Controller
     public function process(ProcessCheckoutRequest $request, string $token): JsonResponse
     {
         $link = PaymentLink::where('checkout_token', $token)->firstOrFail();
-        $this->checkLinkValidity($link);
 
         $transactionReference = 'chk_' . Str::random(16);
 
@@ -54,23 +53,47 @@ class CheckoutController extends Controller
             ], Response::HTTP_SERVICE_UNAVAILABLE);
         }
 
-        $transaction = Transaction::create([
-            'merchant_id' => $link->merchant_id,
-            'provider' => $activeProviderName,
-            'customer_email' => $request->validated('customer_email'),
-            'reference' => $transactionReference,
-            'amount' => $link->amount,
-            'currency' => $link->currency,
-            'status' => PaymentStatus::INITIALIZED,
-            'metadata' => [
-                'payment_link_id' => $link->id,
-                'customer_name' => $request->validated('customer_name'),
-                // THE FIX: Explicitly embed the reference into the callback URL
-                'callback_url' => url("/api/checkout/{$token}/callback?reference={$transactionReference}"),
-            ],
-        ]);
+        try {
+            $transaction = DB::transaction(function () use ($link, $activeProviderName, $request, $transactionReference, $token) {
+                $lockedLink = PaymentLink::whereKey($link->id)->lockForUpdate()->firstOrFail();
+                $this->checkLinkValidity($lockedLink);
 
-        $providerResponse = $paymentProvider->initializePayment($transaction);
+                if ($lockedLink->payment_id) {
+                    abort(Response::HTTP_BAD_REQUEST, 'This payment link has already been used.');
+                }
+
+                return Transaction::create([
+                    'merchant_id' => $lockedLink->merchant_id,
+                    'provider' => $activeProviderName,
+                    'customer_email' => $request->validated('customer_email'),
+                    'reference' => $transactionReference,
+                    'amount' => $lockedLink->amount,
+                    'currency' => $lockedLink->currency,
+                    'status' => PaymentStatus::INITIALIZED,
+                    'metadata' => [
+                        'payment_link_id' => $lockedLink->id,
+                        'customer_name' => $request->validated('customer_name'),
+                        'callback_url' => url("/api/checkout/{$token}/callback?reference={$transactionReference}"),
+                    ],
+                ]);
+            });
+        } catch (\Throwable $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => $e instanceof \Symfony\Component\HttpKernel\Exception\HttpException
+                    ? $e->getMessage()
+                    : 'Unable to start checkout. Please try again.',
+            ], $e instanceof \Symfony\Component\HttpKernel\Exception\HttpException
+                ? $e->getStatusCode()
+                : Response::HTTP_BAD_GATEWAY);
+        }
+
+        try {
+            $providerResponse = $paymentProvider->initializePayment($transaction);
+        } catch (\Throwable $e) {
+            $transaction->update(['status' => PaymentStatus::FAILED]);
+            return response()->json(['status' => 'error', 'message' => 'Payment initialization failed. Please try again.'], Response::HTTP_BAD_GATEWAY);
+        }
 
         if (! $providerResponse['success']) {
             $transaction->update(['status' => PaymentStatus::FAILED]);
@@ -131,15 +154,29 @@ class CheckoutController extends Controller
                 ? PaymentStatus::from($verificationResult['status'])
                 : PaymentStatus::FAILED;
 
-            DB::transaction(function () use (&$transaction, $newStatus, $verificationResult, $link) {
+            try {
+                DB::transaction(function () use (&$transaction, $newStatus, $verificationResult, $link) {
                 $lockedTransaction = Transaction::where('id', $transaction->id)->lockForUpdate()->first();
 
                 if ($lockedTransaction->status === PaymentStatus::PENDING) {
+                    $providerAmount = $verificationResult['amount'] ?? null;
+                    $providerCurrency = $verificationResult['currency'] ?? null;
+                    $providerFee = $verificationResult['fee'] ?? 0;
+                    if ($newStatus === PaymentStatus::SUCCESS
+                        && ($providerAmount === null
+                            || number_format((float) $providerAmount, 4, '.', '') !== number_format((float) $lockedTransaction->amount, 4, '.', '')
+                            || ($providerCurrency !== null && strtoupper((string) $providerCurrency) !== strtoupper((string) $lockedTransaction->currency))
+                            || !is_numeric($providerFee)
+                            || (float) $providerFee < 0
+                            || (float) $providerFee > (float) $lockedTransaction->amount)) {
+                        throw new \RuntimeException('Payment verification mismatch.');
+                    }
+
                     $lockedTransaction->update([
                         'status' => $newStatus,
                         'customer_email' => $lockedTransaction->customer_email ?: ($verificationResult['customer_email'] ?? null),
-                        'fee' => $verificationResult['fee'] ?? 0,
-                        'net_amount' => ($verificationResult['amount'] ?? $lockedTransaction->amount) - ($verificationResult['fee'] ?? 0),
+                        'fee' => $providerFee,
+                        'net_amount' => ($providerAmount ?? $lockedTransaction->amount) - $providerFee,
                     ]);
 
                     \App\Jobs\DispatchMerchantWebhook::dispatch(
@@ -149,23 +186,19 @@ class CheckoutController extends Controller
                     );
 
                     if ($newStatus === PaymentStatus::SUCCESS) {
-                        try {
-                            $wallet = \App\Models\Wallet::firstOrCreate(
-                                ['merchant_id' => $lockedTransaction->merchant_id, 'currency' => $lockedTransaction->currency],
-                                ['available_balance' => 0, 'pending_balance' => 0]
-                            );
+                        $wallet = \App\Models\Wallet::firstOrCreate(
+                            ['merchant_id' => $lockedTransaction->merchant_id, 'currency' => $lockedTransaction->currency],
+                            ['available_balance' => 0, 'pending_balance' => 0]
+                        );
 
-                            $this->ledgerService->credit(
-                                wallet: $wallet,
-                                amount: $lockedTransaction->net_amount,
-                                type: \App\Enums\LedgerEntryType::PAYMENT,
-                                reference: 'ldg_' . $lockedTransaction->id,
-                                transaction: $lockedTransaction,
-                                description: "Payment credit for {$lockedTransaction->reference}"
-                            );
-                        } catch (\Exception $e) {
-                            \Illuminate\Support\Facades\Log::error('Ledger credit failed: ' . $e->getMessage());
-                        }
+                        $this->ledgerService->credit(
+                            wallet: $wallet,
+                            amount: $lockedTransaction->net_amount,
+                            type: \App\Enums\LedgerEntryType::PAYMENT,
+                            reference: 'ldg_' . $lockedTransaction->id,
+                            transaction: $lockedTransaction,
+                            description: "Payment credit for {$lockedTransaction->reference}"
+                        );
 
                         $link->update([
                             'status' => PaymentLinkStatus::COMPLETED,
@@ -174,15 +207,18 @@ class CheckoutController extends Controller
                     }
                 }
                 $transaction = $lockedTransaction;
-            });
+                });
+            } catch (\Throwable $e) {
+                return redirect()->away("{$frontendUrl}/payment-failed?reference={$transaction->reference}&error=verification_failed");
+            }
         }
 
         if ($transaction->status === PaymentStatus::SUCCESS) {
-            $successUrl = $link->redirect_url ?? $link->merchant->settings?->success_url ?? "{$frontendUrl}/payment-success";
+            $successUrl = $this->safeRedirectUrl($link->redirect_url ?? $link->merchant->settings?->success_url, "{$frontendUrl}/payment-success");
             return redirect()->away("{$successUrl}?reference={$transaction->reference}");
         }
 
-        $cancelUrl = $link->merchant->settings?->cancel_url ?? "{$frontendUrl}/payment-failed";
+        $cancelUrl = $this->safeRedirectUrl($link->merchant->settings?->cancel_url, "{$frontendUrl}/payment-failed");
         return redirect()->away("{$cancelUrl}?reference={$transaction->reference}");
     }
 
@@ -196,5 +232,19 @@ class CheckoutController extends Controller
             $link->update(['status' => PaymentLinkStatus::EXPIRED]);
             abort(Response::HTTP_BAD_REQUEST, 'This payment link has expired.');
         }
+    }
+
+    private function safeRedirectUrl(?string $url, string $fallback): string
+    {
+        if (!$url) {
+            return $fallback;
+        }
+
+        $parts = parse_url($url);
+        if (!$parts || !in_array(strtolower($parts['scheme'] ?? ''), ['https'], true) || empty($parts['host'])) {
+            return $fallback;
+        }
+
+        return $url;
     }
 }

@@ -12,17 +12,22 @@ class ApiKeyResource extends JsonResource
         // Fully mask the key for the table (e.g., sk_test_********************)
         $maskedToken = $this->key_prefix . '_********************';
 
-        return [
+        $data = [
             'id' => $this->id,
             'name' => $this->name,
             'environment' => $this->environment,
             'token' => $maskedToken, // Always fully masked for the table view
-            'plain_text_key' => $this->plain_text_key, // Only populated during creation/rotation
             'scopes' => $this->scopes ?? ['*'],
             'expires_at' => $this->expires_at,
             'last_used_at' => $this->last_used_at,
             'revoked_at' => $this->revoked_at,
             'created_at' => $this->created_at,
         ];
+
+        if (! empty($this->plain_text_key)) {
+            $data['plain_text_key'] = $this->plain_text_key;
+        }
+
+        return $data;
     }
 }

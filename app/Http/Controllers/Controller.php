@@ -14,7 +14,7 @@ abstract class Controller
     protected function getMerchantContext(Request $request): Merchant
     {
         // 1. If hitting via an API Key, the VerifyApiKey middleware already set $request->merchant
-        if ($request->merchant) {
+        if ($request->merchant && ! $request->user()) {
             return $request->merchant;
         }
 

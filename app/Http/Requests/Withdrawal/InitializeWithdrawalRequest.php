@@ -23,13 +23,13 @@ class InitializeWithdrawalRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'amount' => ['required', 'numeric', 'min:100'], // Minimum 100 limit
+            'amount' => ['required', 'numeric', 'min:100', 'decimal:0,2'],
             'currency' => ['required', 'string', 'size:3', 'uppercase'],
             'reference' => ['required', 'string', 'max:100', 'unique:withdrawals,reference'],
 
             // Bank details flattened for the API request
-            'bank_code' => ['required', 'string'],
-            'account_number' => ['required', 'string', 'max:20'],
+            'bank_code' => ['required', 'string', 'max:20'],
+            'account_number' => ['required', 'string', 'max:20', 'regex:/^[0-9]+$/'],
             'account_name' => ['required', 'string', 'max:255'],
 
             'metadata' => ['nullable', 'array'],

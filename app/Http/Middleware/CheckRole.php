@@ -2,6 +2,8 @@
 
 namespace App\Http\Middleware;
 
+use App\Models\Merchant;
+use App\Models\MerchantUser;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -16,8 +18,16 @@ class CheckRole
             return response()->json(['message' => 'Unauthenticated.'], 401);
         }
 
+        // Only merchant owners and team members may use merchant UI routes.
+        if (! ($user instanceof Merchant) && ! ($user instanceof MerchantUser)) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Forbidden: This account cannot access merchant operations.',
+            ], 403);
+        }
+
         // Primary Merchant Owners have absolute authority. Let them pass.
-        if (! ($user instanceof \App\Models\MerchantUser)) {
+        if ($user instanceof Merchant) {
             return $next($request);
         }
 

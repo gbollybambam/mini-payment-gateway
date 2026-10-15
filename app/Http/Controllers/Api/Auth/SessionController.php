@@ -14,7 +14,8 @@ class SessionController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $currentTokenId = $request->user()->currentAccessToken()->id;
+        $currentToken = $request->user()->currentAccessToken();
+        $currentTokenId = $currentToken?->id;
 
         $sessions = $request->user()->tokens()->get()->map(function ($token) use ($currentTokenId) {
             return [
@@ -28,6 +29,7 @@ class SessionController extends Controller
 
         return response()->json([
             'status' => 'success',
+            'authentication' => $currentToken ? 'token' : 'session',
             'data' => $sessions,
         ], Response::HTTP_OK);
     }
@@ -37,7 +39,15 @@ class SessionController extends Controller
      */
     public function revokeOthers(Request $request): JsonResponse
     {
-        $currentTokenId = $request->user()->currentAccessToken()->id;
+        $currentToken = $request->user()->currentAccessToken();
+        if (! $currentToken) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Session management is only available for token-authenticated sessions.',
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $currentTokenId = $currentToken->id;
 
         $request->user()->tokens()->where('id', '!=', $currentTokenId)->delete();
 
@@ -52,6 +62,13 @@ class SessionController extends Controller
      */
     public function revoke(Request $request, string $id): JsonResponse
     {
+        if (! $request->user()->currentAccessToken()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Session management is only available for token-authenticated sessions.',
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
         $request->user()->tokens()->where('id', $id)->delete();
 
         return response()->json([

@@ -6,6 +6,7 @@ use App\Enums\PaymentStatus;
 use App\Http\Controllers\Controller;
 use App\Models\Transaction;
 use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
+use App\Services\PaymentProviders\ProviderFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -15,7 +16,7 @@ use Illuminate\Support\Facades\DB;
 class WebhookController extends Controller
 {
     public function __construct(
-        private PaymentProviderInterface $paymentProvider,
+        private ProviderFactory $providerFactory,
         private \App\Services\Ledger\LedgerService $ledgerService
     ) {}
 
@@ -28,21 +29,27 @@ class WebhookController extends Controller
         }
 
         try {
-            $verifiedData = $this->paymentProvider->processWebhook($request);
-        } catch (\Exception $e) {
+            $paymentProvider = $this->providerFactory->make($provider);
+            $verifiedData = $paymentProvider->processWebhook($request);
+        } catch (\Throwable $e) {
             Log::warning("Webhook processing error from provider: {$provider}", ['error' => $e->getMessage()]);
             return response()->json(['status' => 'error', 'message' => 'Processing error.'], Response::HTTP_UNAUTHORIZED);
         }
 
-        if (! $verifiedData['is_valid']) {
+        $event = $verifiedData['event'] ?? '';
+        $knownEvents = ['payment.success', 'payment.failed', 'withdrawal.success', 'withdrawal.failed'];
+
+        if (! ($verifiedData['is_valid'] ?? false)
+            || ! in_array($event, $knownEvents, true)
+            || empty($verifiedData['provider_reference'])) {
             return response()->json(['status' => 'error', 'message' => 'Webhook validation failed.'], Response::HTTP_UNAUTHORIZED);
         }
 
         // ---------------------------------------------------------
         // 1. PAYMENT WEBHOOKS
         // ---------------------------------------------------------
-        if (str_starts_with($verifiedData['event'], 'payment.')) {
-            return DB::transaction(function () use ($verifiedData) {
+        if (str_starts_with($event, 'payment.')) {
+            return DB::transaction(function () use ($verifiedData, $event) {
 
                 // THE FIX: Check BOTH provider_reference AND our local reference!
                 $transaction = Transaction::where(function ($query) use ($verifiedData) {
@@ -61,9 +68,28 @@ class WebhookController extends Controller
                     return response()->json(['status' => 'success', 'message' => 'Transaction already processed.'], Response::HTTP_OK);
                 }
 
-                if ($verifiedData['event'] === 'payment.success') {
+                if ($event === 'payment.success') {
                     $fee = $verifiedData['fee'] ?? 0;
-                    $netAmount = ($verifiedData['amount'] ?? $transaction->amount) - $fee;
+                    $providerAmount = $verifiedData['amount'] ?? null;
+                    $providerCurrency = $verifiedData['currency'] ?? null;
+                    $providerReference = $verifiedData['provider_reference'] ?? null;
+
+                    if ($providerAmount === null
+                        || number_format((float) $providerAmount, 4, '.', '') !== number_format((float) $transaction->amount, 4, '.', '')
+                        || ($providerCurrency !== null && strtoupper((string) $providerCurrency) !== strtoupper((string) $transaction->currency))
+                        || ($providerReference !== null
+                            && (string) $providerReference !== (string) $transaction->provider_reference
+                            && (string) $providerReference !== (string) $transaction->reference)
+                        || ! is_numeric($fee)
+                        || (float) $fee < 0
+                        || (float) $fee > (float) $transaction->amount) {
+                        Log::warning('Webhook payment details did not match local transaction.', [
+                            'transaction_id' => $transaction->id,
+                        ]);
+                        return response()->json(['status' => 'error', 'message' => 'Payment details mismatch.'], Response::HTTP_UNPROCESSABLE_ENTITY);
+                    }
+
+                    $netAmount = (float) $providerAmount - (float) $fee;
 
                     $transaction->update([
                         'status' => PaymentStatus::SUCCESS,
@@ -88,7 +114,13 @@ class WebhookController extends Controller
                     }
 
                     if (isset($transaction->metadata['payment_link_id'])) {
-                        $link = \App\Models\PaymentLink::find($transaction->metadata['payment_link_id']);
+                        $link = \App\Models\PaymentLink::where('id', $transaction->metadata['payment_link_id'])
+                            ->where('merchant_id', $transaction->merchant_id)
+                            ->where(function ($query) use ($transaction) {
+                                $query->whereNull('payment_id')
+                                    ->orWhere('payment_id', $transaction->id);
+                            })
+                            ->first();
                         if ($link) {
                             $link->update([
                                 'status' => \App\Enums\PaymentLinkStatus::COMPLETED,
@@ -102,7 +134,7 @@ class WebhookController extends Controller
                         'payment.success',
                         $transaction->toArray()
                     );
-                } elseif ($verifiedData['event'] === 'payment.failed') {
+                } elseif ($event === 'payment.failed') {
                     $transaction->update(['status' => PaymentStatus::FAILED]);
 
                     \App\Jobs\DispatchMerchantWebhook::dispatch(
@@ -119,8 +151,8 @@ class WebhookController extends Controller
         // ---------------------------------------------------------
         // 2. WITHDRAWAL WEBHOOKS
         // ---------------------------------------------------------
-        if (str_starts_with($verifiedData['event'], 'withdrawal.')) {
-            return DB::transaction(function () use ($verifiedData) {
+        if (str_starts_with($event, 'withdrawal.')) {
+            return DB::transaction(function () use ($verifiedData, $event) {
                 $withdrawal = \App\Models\Withdrawal::where('provider_reference', $verifiedData['provider_reference'])
                     ->orWhere('reference', $verifiedData['provider_reference'])
                     ->lockForUpdate()
@@ -135,7 +167,19 @@ class WebhookController extends Controller
                     return response()->json(['status' => 'success', 'message' => 'Withdrawal already processed.'], Response::HTTP_OK);
                 }
 
-                if ($verifiedData['event'] === 'withdrawal.success') {
+                $webhookAmount = $verifiedData['amount'] ?? null;
+                $webhookCurrency = $verifiedData['currency'] ?? null;
+                if ($webhookAmount === null
+                    || $webhookCurrency === null
+                    || number_format((float) $webhookAmount, 4, '.', '') !== number_format((float) $withdrawal->amount, 4, '.', '')
+                    || strtoupper((string) $webhookCurrency) !== strtoupper((string) $withdrawal->currency)) {
+                    Log::warning('Webhook withdrawal details did not match local withdrawal.', [
+                        'withdrawal_id' => $withdrawal->id,
+                    ]);
+                    return response()->json(['status' => 'error', 'message' => 'Withdrawal details mismatch.'], Response::HTTP_UNPROCESSABLE_ENTITY);
+                }
+
+                if ($event === 'withdrawal.success') {
                     $withdrawal->update(['status' => \App\Enums\WithdrawalStatus::SUCCESS]);
 
                     \App\Jobs\DispatchMerchantWebhook::dispatch(
@@ -143,7 +187,7 @@ class WebhookController extends Controller
                         'withdrawal.success',
                         $withdrawal->toArray()
                     );
-                } elseif ($verifiedData['event'] === 'withdrawal.failed') {
+                } elseif ($event === 'withdrawal.failed') {
                     $withdrawal->update([
                         'status' => \App\Enums\WithdrawalStatus::FAILED,
                         'failure_reason' => $verifiedData['reason'] ?? 'Bank network rejected transfer',

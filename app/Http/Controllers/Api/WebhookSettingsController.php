@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Str;
+use App\Support\SafeWebhookUrl;
 
 class WebhookSettingsController extends Controller
 {
@@ -33,7 +34,15 @@ class WebhookSettingsController extends Controller
     public function update(Request $request): JsonResponse
     {
         $request->validate([
-            'webhook_url' => ['nullable', 'url'],
+            'webhook_url' => [
+                'nullable',
+                'url:https',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if ($value && !SafeWebhookUrl::isSafe($value)) {
+                        $fail('The webhook URL must use HTTPS and resolve only to a public address.');
+                    }
+                },
+            ],
             'webhook_secret' => ['nullable', 'string', 'min:16'],
         ]);
 

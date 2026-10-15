@@ -14,7 +14,7 @@ class ApiKeyService
 
     public function generate(Merchant $merchant, string $name, string $environment): array
     {
-        $prefix = $environment === 'production' ? 'sk_live_' : 'sk_test_';
+        $prefix = $environment === 'live' ? 'sk_live_' : 'sk_test_';
         $plainTextKey = $prefix . Str::random(40);
 
         $apiKey = $merchant->apiKeys()->create([
@@ -35,7 +35,7 @@ class ApiKeyService
      */
     public function rotate(ApiKey $apiKey): string
     {
-        $prefix = $apiKey->environment === 'production' ? 'sk_live_' : 'sk_test_';
+        $prefix = $apiKey->environment === 'live' ? 'sk_live_' : 'sk_test_';
         $plainTextKey = $prefix . Str::random(40);
 
         $apiKey->update([
