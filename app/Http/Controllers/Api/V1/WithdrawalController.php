@@ -8,13 +8,15 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\Withdrawal\GetWithdrawalsRequest;
 use App\Http\Requests\Withdrawal\InitializeWithdrawalRequest;
 use App\Http\Resources\WithdrawalResource;
+use App\Models\Merchant; // <--- Make sure Merchant model is imported
 use App\Models\Withdrawal;
 use App\Services\Ledger\LedgerService;
-use App\Services\PaymentProviders\Contracts\PaymentProviderInterface;
 use App\Services\PaymentProviders\ProviderFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Symfony\Component\HttpFoundation\Response;
 
 class WithdrawalController extends Controller
@@ -26,7 +28,6 @@ class WithdrawalController extends Controller
 
     public function index(GetWithdrawalsRequest $request): JsonResponse
     {
-        // FIX: Use global context resolver
         $merchant = $this->getMerchantContext($request);
         $query = $merchant->withdrawals()->latest();
 
@@ -57,7 +58,6 @@ class WithdrawalController extends Controller
 
     public function show(Request $request, string $id): JsonResponse
     {
-        // FIX: Use global context resolver
         $merchant = $this->getMerchantContext($request);
         $withdrawal = $merchant->withdrawals()->findOrFail($id);
 
@@ -67,12 +67,60 @@ class WithdrawalController extends Controller
         ], Response::HTTP_OK);
     }
 
+    /**
+     * UI Dashboard Payout Initialization (Allows raw bank details from UI)
+     */
     public function initialize(InitializeWithdrawalRequest $request): JsonResponse
     {
-        // FIX: Use global context resolver
         $merchant = $this->getMerchantContext($request);
         $validated = $request->validated();
 
+        $bankCode = $validated['bank_code'];
+        $accountNumber = $validated['account_number'];
+        $accountName = $validated['account_name'];
+
+        return $this->processWithdrawal($merchant, $validated, $bankCode, $accountNumber, $accountName, null);
+    }
+
+    /**
+     * B2B API Payout Initialization (Strictly enforces verification token)
+     */
+    public function initializeB2B(Request $request): JsonResponse
+    {
+        $merchant = $this->getMerchantContext($request);
+
+        $validated = $request->validate([
+            'amount' => ['required', 'numeric', 'min:100', 'decimal:0,2'],
+            'currency' => ['required', 'string', 'size:3', 'uppercase'],
+            'reference' => ['required', 'string', 'max:100', 'unique:withdrawals,reference'],
+            'verification_token' => ['required', 'string'],
+            'metadata' => ['nullable', 'array'],
+        ]);
+
+        $cacheKey = 'payout_verify_' . $validated['verification_token'];
+        $cachedAccount = Cache::get($cacheKey);
+
+        if (!$cachedAccount) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Account verification token is invalid or has expired. Please re-resolve the account.'
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $bankCode = $cachedAccount['bank_code'];
+        $accountNumber = $cachedAccount['account_number'];
+        $accountName = $cachedAccount['account_name']; // Untamperable server-side data!
+
+        return $this->processWithdrawal($merchant, $validated, $bankCode, $accountNumber, $accountName, $validated['verification_token']);
+    }
+
+    /**
+     * Shared core logic for executing wallet debits and provider initialization
+     * 
+     * @param Merchant $merchant  <--- Type hint resolves IDE warning
+     */
+    private function processWithdrawal(Merchant $merchant, array $validated, string $bankCode, string $accountNumber, string $accountName, ?string $verificationToken): JsonResponse
+    {
         $wallet = $merchant->wallets()->where('currency', $validated['currency'])->first();
 
         if (!$wallet) {
@@ -80,14 +128,14 @@ class WithdrawalController extends Controller
         }
 
         try {
-            $withdrawal = DB::transaction(function () use ($merchant, $wallet, $validated) {
+            $withdrawal = DB::transaction(function () use ($merchant, $wallet, $validated, $bankCode, $accountNumber, $accountName) {
                 $this->ledgerService->debit(
                     wallet: $wallet,
                     amount: $validated['amount'],
                     type: LedgerEntryType::WITHDRAWAL,
                     reference: 'ldg_wth_' . $validated['reference'],
                     transaction: null,
-                    description: "Withdrawal to {$validated['account_number']}"
+                    description: "Withdrawal to {$accountNumber}"
                 );
 
                 return Withdrawal::create([
@@ -98,9 +146,9 @@ class WithdrawalController extends Controller
                     'currency' => $validated['currency'],
                     'status' => WithdrawalStatus::PENDING,
                     'bank_account' => [
-                        'bank_code' => $validated['bank_code'],
-                        'account_number' => $validated['account_number'],
-                        'account_name' => $validated['account_name'],
+                        'bank_code' => $bankCode,
+                        'account_number' => $accountNumber,
+                        'account_name' => $accountName,
                     ],
                     'metadata' => $validated['metadata'] ?? [],
                 ]);
@@ -120,11 +168,13 @@ class WithdrawalController extends Controller
                 ->make($withdrawal->provider)
                 ->initializePayout($withdrawal);
 
-            if (!($providerResponse['success'] ?? false)
+            if (
+                !($providerResponse['success'] ?? false)
                 || empty($providerResponse['provider_reference'])
                 || !in_array(strtoupper((string) ($providerResponse['status'] ?? '')), ['PENDING', 'PROCESSING'], true)
                 || !is_numeric($providerResponse['fee'] ?? 0)
-                || (float) ($providerResponse['fee'] ?? 0) < 0) {
+                || (float) ($providerResponse['fee'] ?? 0) < 0
+            ) {
                 throw new \Exception('Provider rejected payout.');
             }
 
@@ -133,6 +183,11 @@ class WithdrawalController extends Controller
                 'provider_reference' => $providerResponse['provider_reference'],
                 'fee' => $providerResponse['fee'] ?? 0,
             ]);
+
+            // Burn the token after successful usage so it cannot be re-used
+            if ($verificationToken) {
+                Cache::forget('payout_verify_' . $verificationToken);
+            }
         } catch (\Throwable $e) {
             DB::transaction(function () use ($withdrawal, $wallet, $e) {
                 $withdrawal->update([
@@ -171,7 +226,6 @@ class WithdrawalController extends Controller
 
     public function verify(Request $request, string $id): JsonResponse
     {
-        // FIX: Use global context resolver
         $merchant = $this->getMerchantContext($request);
 
         $withdrawal = Withdrawal::where('merchant_id', $merchant->id)
@@ -287,9 +341,23 @@ class WithdrawalController extends Controller
                 $request->input('bank_code')
             );
 
+            // Generate a transient verification token (valid for 15 minutes)
+            $verificationToken = 'vtok_' . Str::random(32);
+            $cacheKey = 'payout_verify_' . $verificationToken;
+
+            $accountName = $result['account_name'] ?? $result['data']['account_name'] ?? 'Verified Account';
+
+            Cache::put($cacheKey, [
+                'account_number' => $request->input('account_number'),
+                'bank_code' => $request->input('bank_code'),
+                'account_name' => $accountName,
+            ], now()->addMinutes(15));
+
             return response()->json([
                 'status' => 'success',
-                'data' => $result
+                'data' => array_merge($result, [
+                    'verification_token' => $verificationToken,
+                ])
             ], Response::HTTP_OK);
         } catch (\Exception $e) {
             return response()->json([

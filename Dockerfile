@@ -1,5 +1,5 @@
 # Use the official PHP image with Apache
-FROM php:8.2-apache
+FROM php:8.4-apache
 
 # Install required system packages and PostgreSQL dependencies
 RUN apt-get update && apt-get install -y \
@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     zip \
     unzip \
     git \
+    curl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install PHP extensions required by Laravel and PostgreSQL
@@ -36,9 +37,7 @@ RUN sed -ri -e 's!/var/www/!/var/www/html/public!g' /etc/apache2/apache2.conf /e
 # Set strict permissions for Laravel's storage and cache directories
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 
-# Copy the deployment startup script and make it executable
 COPY start.sh /usr/local/bin/start.sh
 RUN chmod +x /usr/local/bin/start.sh
 
-# Run the startup script when the container boots
 CMD ["/usr/local/bin/start.sh"]

@@ -1,58 +1,119 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Mini Payment Gateway
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A portfolio payment-gateway prototype demonstrating merchant accounts, team roles,
+scoped API keys, hosted checkout, provider webhooks, wallet/ledger updates,
+withdrawals, and B2B API integration.
 
-## About Laravel
+This is a **sandbox/demo project**. It is not a licensed payment processor and
+must not be used for real customer funds or production financial traffic.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Stack
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- Laravel 13 / PHP 8.3
+- PostgreSQL 17
+- Laravel Sanctum
+- Database queues
+- Next.js / React / TypeScript frontend
+- Paystack and Cray provider adapters
+- Docker Compose
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+## Run with Docker
 
-## Learning Laravel
+1. Copy the deployment template:
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+   ```powershell
+   Copy-Item .env.docker.example .env
+   ```
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+2. Generate an application key and place it in `.env`:
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+   ```powershell
+   php artisan key:generate --show
+   ```
 
-## Agentic Development
+3. Set sandbox provider credentials in `.env` if provider calls are required.
+   Never commit `.env` or real credentials.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+4. Start the stack:
 
-```bash
-composer require laravel/boost --dev
+   ```powershell
+   docker compose up -d --build
+   ```
 
-php artisan boost:install
+5. Open:
+
+   - Frontend: http://localhost:3000
+   - Backend health check: http://localhost:8080/up
+   - Mailpit inbox: http://localhost:8025
+
+The stack includes PostgreSQL, the Laravel API, a database queue worker, the
+Next.js frontend, and Mailpit. Mailpit captures demo email locally without
+requiring a paid email provider.
+
+Useful commands:
+
+```powershell
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f queue
+docker compose down
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+## B2B API example
+
+Create a test API key in the dashboard, then send:
+
+```http
+POST http://localhost:8080/api/v1/payments
+Authorization: Bearer YOUR_TEST_API_KEY
+Content-Type: application/json
+Idempotency-Key: demo-order-10001
+```
+
+```json
+{
+  "amount": 5000,
+  "currency": "NGN",
+  "customer_email": "customer@example.com",
+  "reference": "demo-order-10001",
+  "metadata": {
+    "order_id": "ORDER-10001"
+  }
+}
+```
+
+The API returns a payment ID and checkout URL. Use the payment ID with
+`GET /api/v1/payments/{id}` to query status. See
+`manual-review/SECURITY-AND-MANUAL-TEST-PLAN.md` for the broader test plan.
+
+## Email and webhooks
+
+For a public deployment, configure a real SMTP provider if visitors need to
+receive verification or invitation emails. Mailpit is intentionally local-only.
+
+Configure provider webhooks to:
+
+```text
+https://YOUR_BACKEND_DOMAIN/api/webhooks/paystack
+https://YOUR_BACKEND_DOMAIN/api/webhooks/cray
+```
+
+The queue worker must remain running for queued merchant webhook delivery.
+
+## Security and demo limitations
+
+- Use sandbox/test provider credentials only.
+- Set `APP_DEBUG=false` outside local development.
+- Use HTTPS and deployment-managed secrets.
+- Do not expose Mailpit publicly.
+- Do not use real bank accounts or customer funds.
+- Provider capabilities that are not implemented should remain disabled.
 
 ## Contributing
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
-
-## Code of Conduct
-
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
-
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+Issues and pull requests are welcome. Please do not include credentials,
+customer data, or provider secrets in issues, commits, screenshots, or logs.
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+This project is released under the MIT License. See [LICENSE](LICENSE).

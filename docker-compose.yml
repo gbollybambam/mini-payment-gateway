@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-mini_gateway}
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change-me}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+    environment:
+      MP_MAX_MESSAGES: 500
+
+  backend:
+    build:
+      context: .
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    environment:
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_CONNECTION: pgsql
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      SANCTUM_STATEFUL_DOMAINS: ${SANCTUM_STATEFUL_DOMAINS:-localhost:3000,localhost}
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      MAIL_MAILER: smtp
+      APP_DEBUG: "false"
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/up || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - storage_data:/var/www/html/storage
+
+  queue:
+    build:
+      context: .
+    command: ["php", "artisan", "queue:work", "database", "--sleep=3", "--tries=3", "--timeout=90"]
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped
+    environment:
+      APP_URL: ${APP_URL:-http://localhost:8080}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_CONNECTION: pgsql
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      SANCTUM_STATEFUL_DOMAINS: ${SANCTUM_STATEFUL_DOMAINS:-localhost:3000,localhost}
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      MAIL_MAILER: smtp
+      APP_DEBUG: "false"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - storage_data:/var/www/html/storage
+
+  frontend:
+    build:
+      context: ../payment-gateway-frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api}
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8080}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api}
+      NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8080}
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  storage_data:

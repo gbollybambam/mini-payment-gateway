@@ -27,10 +27,13 @@ class InitializeWithdrawalRequest extends FormRequest
             'currency' => ['required', 'string', 'size:3', 'uppercase'],
             'reference' => ['required', 'string', 'max:100', 'unique:withdrawals,reference'],
 
-            // Bank details flattened for the API request
-            'bank_code' => ['required', 'string', 'max:20'],
-            'account_number' => ['required', 'string', 'max:20', 'regex:/^[0-9]+$/'],
-            'account_name' => ['required', 'string', 'max:255'],
+            // Verification Token for Untamperable B2B Payouts
+            'verification_token' => ['nullable', 'string'],
+
+            // Bank details required IF verification_token is not provided (UI Dashboard)
+            'bank_code' => ['required_without:verification_token', 'nullable', 'string', 'max:20'],
+            'account_number' => ['required_without:verification_token', 'nullable', 'string', 'max:20', 'regex:/^[0-9]+$/'],
+            'account_name' => ['required_without:verification_token', 'nullable', 'string', 'max:255'],
 
             'metadata' => ['nullable', 'array'],
         ];

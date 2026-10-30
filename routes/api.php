@@ -134,11 +134,18 @@ Route::prefix('v1')->middleware(['auth.api_key', 'merchant.active'])->group(func
     Route::get('/payments/{id}', [\App\Http\Controllers\Api\V1\PaymentController::class, 'show'])
         ->middleware('scope:payments:read');
 
-    // Withdrawal Endpoints
     Route::get('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'index'])
         ->middleware('scope:withdrawals:read');
 
-    Route::post('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'initialize'])
+    // B2B clients need bank lookup and account resolution
+    Route::get('/withdrawals/banks', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'getBanks'])
+        ->middleware('scope:withdrawals:read');
+
+    Route::get('/withdrawals/resolve-account', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'resolveAccount'])
+        ->middleware('scope:withdrawals:read');
+
+    // B2B API payout initialization strictly uses initializeB2B (token required)
+    Route::post('/withdrawals', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'initializeB2B'])
         ->middleware('scope:withdrawals:write');
 
     Route::get('/withdrawals/{id}', [\App\Http\Controllers\Api\V1\WithdrawalController::class, 'show'])
